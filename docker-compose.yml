@@ -85,6 +85,35 @@ services:
       start_period: 60s
       retries: 3
 
+  # F2 (G1.1-prod): RiskRunner-only service. NOT `arb.main` — running full
+  # arb.main here would double-execute arb:signals (LiveExecutor vs the
+  # engine's emit_trades) and duplicate feeds, re-polluting the honest
+  # paper window. This runs only DrawdownBreaker/VolatilityBreaker +
+  # the arb:risk:halted publisher. arb:orders stays single-writer
+  # (emit_trades); reyog_risk only reads it.
+  risk:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: reyog_risk
+    restart: unless-stopped
+    depends_on:
+      redis: { condition: service_healthy }
+      backend: { condition: service_started }
+    command: ["python", "-m", "scripts.risk_main"]
+    environment:
+      REDIS_URL: redis://:${REDIS_PASSWORD:-reyog_redis_secret}@redis:6379/0
+      DATABASE_URL: postgresql+asyncpg://${DB_USER:-arb}:${DB_PASSWORD:-arb_secret}@postgres:5432/${DB_NAME:-ultra_arb}
+      PAPER_TRADE: "${PAPER_TRADE:-true}"
+      RISK_HEALTH_PORT: "8001"
+    networks: [reyog]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8001/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+
   edge_runner:
     build:
       context: .
