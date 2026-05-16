@@ -268,3 +268,57 @@ docker compose logs -f engine
 - Polymarket private key required for live CLOB execution (sandbox mode until set)
 - `scripts/integration_test.py` — verify end-to-end before going live
 - Monitor latency endpoint (`/api/latency`) target: tick→decision ~77μs
+
+---
+
+## G1.1-poly / G1.1-prod hardening (2026-05-17)
+
+**Polymarket accounting fixed (was structurally broken).**
+
+- **Audit verdict:** `emit_polymarket_bets` signal generation is honest &
+  data-driven (no random/fake, unlike the old `emit_trades`). But result
+  accounting was 100% broken by an `arb:orders` List-vs-Stream type collision.
+- **F1 (`scripts/real_market_engine.py`):** `resolve_polymarket_bets` used
+  `r.xadd("arb:orders",…)` on a Redis **List** → WRONGTYPE every resolution,
+  silently killing all accounting after it. Now `publish()` (List API) wrapped
+  in try/except.
+- **F2 (`arb/risk/risk_runner.py`):** `_trade_monitor_loop` used
+  `r.xread({"arb:orders":…})` → WRONGTYPE every poll; DrawdownBreaker never
+  saw a trade. Rewired to the G1.1 List pattern (`latest()` + last-seen-ts +
+  dedupe).
+- **F3:** per-asset stats + daily-loss tracking moved ABOVE the bridge so
+  they update even if the bridge fails.
+- **Double-count fix:** `arb:polymarket:bets` is append-only; the original
+  `status:"open"` entry was immortal and re-resolved every cycle. Added an
+  authoritative restart-surviving resolved-id set `arb:poly:resolved`
+  (7-day TTL); idempotent.
+- **Baseline reset:** `arb:orders`/`arb:signals`/daily-loss cleared via
+  `reset_paper_baseline.py`; additionally cleared `arb:polymarket:bets`
+  (8453 stale May-15 bets), `arb:poly:stats:*`, `arb:poly:seen:*` (script
+  does NOT cover these — clear manually on future resets).
+
+**F2 deployed as RiskRunner-only service (NOT full `arb.main`)** to avoid
+LiveExecutor/feeds_main conflict with the engine — full arb.main would
+double-execute `arb:signals` (LiveExecutor vs `emit_trades`) and duplicate
+price feeds, re-polluting the honest window. New `reyog_risk` container
+(`scripts/risk_main.py`, `Dockerfile.backend`, `/health` on :8001).
+`emit_trades` remains the single honest `arb:orders` writer; reyog_risk
+read-only.
+
+**Deferred to G2 (modeling — need 24h honest data first):**
+- LiveExecutor latent WRONGTYPE bug at `live_executor.py:52` (not used in
+  production currently — no container runs arb.main).
+- F4: `_classify_market` misclassifies 5m/15m windows as "4h".
+- F5: `_updown_probability` `samples_per_hour=3600` miscalibrated.
+- F6: resolution uses our own price feed (simulated settlement, not true
+  Polymarket settlement) — fine for paper, don't treat as real-edge proof.
+- Pre-existing double-count had inflated all historical Polymarket stats.
+
+**Prod parity note:** VPS `Dockerfile.backend` + `requirements.txt` were
+still pre-G0 (no numpy; only reyog_risk was rebuilt with the G0 pinned
+`requirements.txt`). engine/edges/backend still run pre-G0 images (deploys
+were always `docker cp`, never rebuilt). Full G0 image rollout to those
+services is still pending.
+
+**Status:** F1–F3 + double-count + RiskRunner service deployed & verified
+on VPS (paper). Awaiting approval to start the ≥24h honest data window.
