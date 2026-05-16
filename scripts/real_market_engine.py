@@ -185,7 +185,10 @@ async def emit_signals():
         t_after_kalman = time.perf_counter_ns()
         rust_kalman_ns = t_after_kalman - t_after_spread
 
-        strategy = random.choice(STRATEGIES)
+        # G1: honest attribution. This signal IS cross-exchange arbitrage
+        # (it is literally derived from the spread between two exchanges).
+        # No random.choice — the strategy that decided is the strategy tagged.
+        strategy = "CrossExchange"
         # Deterministic probability from actual spread — no random noise
         # A larger real spread means higher confidence, but execution risk caps the ceiling
         abs_spread = abs(spread_bps)
@@ -243,90 +246,124 @@ async def emit_signals():
             "buy_exchange": ex_a if spread_bps > 0 else ex_b,
             "sell_exchange": ex_b if spread_bps > 0 else ex_a,
             "mid_a": p_a["mid"], "mid_b": p_b["mid"],
+            # G1: honest tags carried into the trade record
+            "strategy_id": strategy,
+            "market_type": "crypto",
+            "signal_ts": int(time.time() * 1000),
             "ts": int(time.time() * 1000),
         })
         counters["signals"] += 1
 
 
 async def emit_trades():
-    """Execute paper trades at REAL market prices.
-    Records signal→order latency for the pipeline visualizer.
+    """G1 SIGNAL-DRIVEN executor (honest attribution).
+
+    A trade is opened ONLY when emit_signals() produced a real, tradeable
+    signal. The trade carries the REAL strategy_id of the signal that caused
+    it — no random.choice. Reads arb:signals non-destructively (the dashboard
+    also reads that stream) by tracking the newest processed signal_ts.
+
+    Honest consequence: real cross-exchange spreads between Gate.io/HTX are
+    usually < 4 bps, so `tradeable` is rarely true. Far fewer trades than the
+    old random emitter. Few/no trades when there is no edge is the TRUTH the
+    gated framework exists to surface — not a bug.
     """
-    from arb.infra.redis_bus import publish, get_redis
+    from arb.infra.redis_bus import publish, get_redis, latest
     r = get_redis()
     global equity
+    last_seen_ts = int(time.time() * 1000)  # ignore backlog; only act on new signals
+    seen: deque = deque(maxlen=500)         # dedupe processed signals
+
     while True:
-        await asyncio.sleep(random.uniform(8, 30))  # ~150-450 trades/hour
-        sym = random.choice(SYMBOLS)
-        if sym not in prices or len(prices[sym]) < 2:
+        await asyncio.sleep(1.0)  # signals emit every 0.5-1.5s
+        try:
+            signals = await latest("arb:signals", 50)
+        except Exception as e:
+            counters["errors"] += 1
+            if counters["errors"] < 5:
+                print(f"[trades] signal read err: {repr(e)[:120]}")
             continue
 
-        # Decision-to-execution latency tracking
-        t_signal = time.perf_counter_ns()
+        # latest() returns newest-first → process oldest-first
+        for sig in reversed(signals):
+            sig_ts = int(sig.get("signal_ts") or sig.get("ts") or 0)
+            if sig_ts <= last_seen_ts:
+                continue
+            if not sig.get("tradeable"):
+                last_seen_ts = max(last_seen_ts, sig_ts)
+                continue
+            dedupe_key = (sig_ts, sig.get("symbol"), sig.get("spread_bps_real"))
+            if dedupe_key in seen:
+                continue
+            seen.append(dedupe_key)
+            last_seen_ts = max(last_seen_ts, sig_ts)
 
-        exs = list(prices[sym].items())
-        ex_a, p_a = exs[0]
-        ex_b, p_b = exs[1]
+            sym = sig.get("symbol")
+            strategy = sig.get("strategy_id") or sig.get("strategy") or "Unknown"
+            market_type = sig.get("market_type", "crypto")
+            if not sym or sym not in prices or len(prices[sym]) < 2:
+                continue
 
-        # Real spread = real edge
-        spread = p_b["mid"] - p_a["mid"]
-        if spread > 0:
-            buy_ex, buy_price = ex_a, p_a["ask"]
-            sell_ex, sell_price = ex_b, p_b["bid"]
-        else:
-            buy_ex, buy_price = ex_b, p_b["ask"]
-            sell_ex, sell_price = ex_a, p_a["bid"]
+            t_signal = time.perf_counter_ns()
+            buy_ex = sig.get("buy_exchange")
+            sell_ex = sig.get("sell_exchange")
+            buy_p = prices[sym].get(buy_ex, {})
+            sell_p = prices[sym].get(sell_ex, {})
+            buy_price = buy_p.get("ask")
+            if not buy_price:
+                continue
 
-        strategy = random.choice(STRATEGIES)
-        # Wallet-aware position sizing: half-Kelly capped at 2.5% per trade
-        capital, is_real, _ = await _get_capital(r)
-        # Edge probability from real spread
-        edge_prob = min(0.7, 0.5 + abs(spread / p_a["mid"]) * 50)
-        size_usd = _kelly_position_usd(capital, edge_prob, win_loss_ratio=1.5)
-        size_usd = max(size_usd, 1.0)  # absolute floor $1
-        size_usd = min(size_usd, capital * 0.10)  # never >10% of capital
-        ts = int(time.time() * 1000)
+            capital, is_real, _ = await _get_capital(r)
+            prob = float(sig.get("probability_score", 0.55))
+            size_usd = _kelly_position_usd(capital, prob, win_loss_ratio=1.5)
+            size_usd = max(size_usd, 1.0)
+            size_usd = min(size_usd, capital * 0.10)
+            open_ts = int(time.time() * 1000)
 
-        t_before_publish = time.perf_counter_ns()
-        signal_to_order_ns = t_before_publish - t_signal
-        asyncio.create_task(_record_latency(r, "signal_to_order", signal_to_order_ns))
-        asyncio.create_task(_record_latency(r, "tick_to_order", t_before_publish - t_signal))
+            t_before_publish = time.perf_counter_ns()
+            asyncio.create_task(_record_latency(r, "signal_to_order", t_before_publish - t_signal))
+            asyncio.create_task(_record_latency(r, "tick_to_order", t_before_publish - t_signal))
 
-        await publish("arb:orders", {
-            "event": "OPEN",
-            "strategy": strategy, "symbol": sym,
-            "exchange": buy_ex, "direction": "long",
-            "size_usd": round(size_usd, 2),
-            "price": round(buy_price, 4),
-            "ts": ts,
-            "source": "REAL",
-        })
+            await publish("arb:orders", {
+                "event": "OPEN",
+                "strategy": strategy, "strategy_id": strategy,
+                "market_type": market_type,
+                "symbol": sym, "exchange": buy_ex, "direction": "long",
+                "size_usd": round(size_usd, 2),
+                "price": round(buy_price, 4),
+                "signal_ts": sig_ts,
+                "exec_ts": open_ts,
+                "latency_ms": round((t_before_publish - t_signal) / 1e6, 3),
+                "ts": open_ts,
+                "source": "REAL",
+            })
 
-        # Hold for short period (HFT)
-        await asyncio.sleep(random.uniform(0.3, 2.0))
+            await asyncio.sleep(random.uniform(0.3, 2.0))  # short hold
 
-        # Re-read latest price after hold
-        sym_data = prices.get(sym, {})
-        exit_p = sym_data.get(sell_ex, {}).get("bid", sell_price)
+            exit_p = prices.get(sym, {}).get(sell_ex, {}).get(
+                "bid", sell_p.get("bid", buy_price)
+            )
+            gross_bps = (exit_p - buy_price) / buy_price * 10_000
+            net_bps = gross_bps - 4  # 2 bps each side, real roundtrip cost
+            pnl = size_usd * (net_bps / 10_000)
+            equity += pnl
+            close_ts = int(time.time() * 1000)
 
-        # Realistic PnL: gross from spread, minus 4 bps fees
-        gross_bps = (exit_p - buy_price) / buy_price * 10_000
-        net_bps = gross_bps - 4  # 2 bps maker each side
-        pnl = size_usd * (net_bps / 10_000)
-        equity += pnl
-
-        await publish("arb:orders", {
-            "event": "CLOSE",
-            "strategy": strategy, "symbol": sym,
-            "exchange": sell_ex, "direction": "short",
-            "size_usd": round(size_usd, 2),
-            "exit_price": round(exit_p, 4),
-            "pnl": round(pnl, 4),
-            "pnl_bps": round(net_bps, 2),
-            "ts": int(time.time() * 1000),
-            "source": "REAL",
-        })
-        counters["trades"] += 1
+            await publish("arb:orders", {
+                "event": "CLOSE",
+                "strategy": strategy, "strategy_id": strategy,
+                "market_type": market_type,
+                "symbol": sym, "exchange": sell_ex, "direction": "short",
+                "size_usd": round(size_usd, 2),
+                "exit_price": round(exit_p, 4),
+                "pnl": round(pnl, 4),
+                "pnl_bps": round(net_bps, 2),
+                "signal_ts": sig_ts,
+                "exec_ts": close_ts,
+                "ts": close_ts,
+                "source": "REAL",
+            })
+            counters["trades"] += 1
 
 
 async def emit_funding():
