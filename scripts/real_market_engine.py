@@ -742,8 +742,22 @@ async def resolve_polymarket_bets():
     while True:
         await asyncio.sleep(60)  # resolve check every minute (short intervals!)
         bets = await latest("arb:polymarket:bets", count=500)
+        # Keep the dedup set from growing forever (bets resolve within hours;
+        # a 7-day idempotency window is far more than enough).
+        await r.expire("arb:poly:resolved", 604800)
         for b in bets:
             if b.get("status") != "open":
+                continue
+            # Double-count root cause: arb:polymarket:bets is an append-only
+            # List — resolving publishes a NEW won/lost entry but the original
+            # "open" entry is immortal and re-reads every cycle. Make
+            # resolution idempotent via an authoritative, restart-surviving
+            # resolved-id set (an in-memory set would re-count once per
+            # restart since the open entry persists in the list).
+            bet_id = b.get("id")
+            if not bet_id:
+                continue  # cannot dedup safely — skip rather than risk N-count
+            if await r.sismember("arb:poly:resolved", bet_id):
                 continue
             try:
                 end = datetime.fromisoformat(b.get("end_date", "").replace("Z", "+00:00"))
@@ -820,6 +834,11 @@ async def resolve_polymarket_bets():
                 })
             except Exception as e:
                 print(f"[poly] WARN arb:orders bridge failed (PnL still resolved): {repr(e)[:160]}")
+
+            # Mark resolved LAST — only after status + accounting are durably
+            # written. A crash before this means at-most one re-resolution
+            # next cycle (at-least-once), never the old infinite N-count.
+            await r.sadd("arb:poly:resolved", bet_id)
 
 
 async def status():
