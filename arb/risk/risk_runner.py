@@ -5,8 +5,8 @@ import asyncio
 import time
 from arb.risk.circuit_breakers import DrawdownBreaker, VolatilityBreaker
 from arb.risk.position_manager import PortfolioRiskManager
-from arb.infra.redis_bus import get_redis, publish
-import json
+from arb.infra.redis_bus import get_redis, publish, latest
+from collections import deque
 
 CHECK_INTERVAL = 10
 
@@ -67,25 +67,40 @@ class RiskRunner:
             await asyncio.sleep(CHECK_INTERVAL)
 
     async def _trade_monitor_loop(self) -> None:
-        """Consume arb:orders stream to update balance and vol breaker."""
-        r = get_redis()
-        last_id = "$"
+        """Consume arb:orders to update balance and vol breaker.
+
+        F2 (same fix as G1.1): arb:orders is a Redis LIST (redis_bus.publish
+        → lpush), not a Stream. The old r.xread() raised WRONGTYPE on every
+        poll, so the DrawdownBreaker never saw a single trade. Mirror the
+        emit_trades() pattern: non-destructive latest() read, track newest
+        processed ts, dedupe. Ignore the backlog on startup.
+        """
+        last_seen_ts = int(time.time() * 1000)  # ignore backlog; only new closes
+        seen: deque = deque(maxlen=1000)         # dedupe processed CLOSE events
         while True:
             try:
-                results = await r.xread({"arb:orders": last_id}, count=20, block=200)
-                if results:
-                    for _, messages in results:
-                        for msg_id, fields in messages:
-                            last_id = msg_id
-                            data = json.loads(fields["data"])
-                            if data.get("event") == "CLOSE" and "pnl" in data:
-                                pnl = float(data["pnl"])
-                                self._current_balance += pnl
-                                self.drawdown_breaker.record_trade(pnl)
-                                ret = pnl / self._daily_start_balance
-                                self.vol_breaker.add_return(ret)
+                orders = await latest("arb:orders", 100)
+                # latest() is newest-first → process oldest-first
+                for o in reversed(orders):
+                    if o.get("event") != "CLOSE" or "pnl" not in o:
+                        continue
+                    o_ts = int(o.get("ts") or 0)
+                    if o_ts <= last_seen_ts:
+                        continue
+                    dedupe_key = (o_ts, o.get("symbol"), o.get("pnl"),
+                                  o.get("source"))
+                    if dedupe_key in seen:
+                        continue
+                    seen.append(dedupe_key)
+                    last_seen_ts = max(last_seen_ts, o_ts)
+
+                    pnl = float(o["pnl"])
+                    self._current_balance += pnl
+                    self.drawdown_breaker.record_trade(pnl)
+                    ret = pnl / self._daily_start_balance
+                    self.vol_breaker.add_return(ret)
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 print(f"[risk_runner] trade monitor error: {e}")
-                await asyncio.sleep(1)
+            await asyncio.sleep(0.5)

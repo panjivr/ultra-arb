@@ -791,17 +791,8 @@ async def resolve_polymarket_bets():
             pnl = (payout - b["stake_usd"]) if won else -b["stake_usd"]
             print(f"[poly] RESOLVED {new_status} [{b.get('interval','?')}] {b['side']} on {asset}  PnL=${pnl:.2f}")
 
-            # Bug 1 fix: wire Polymarket PnL into arb:orders so DrawdownBreaker sees it
-            await r.xadd("arb:orders", {"data": json.dumps({
-                "event": "CLOSE",
-                "pnl": pnl,
-                "source": "polymarket",
-                "strategy": "polymarket",
-                "symbol": asset,
-                "ts": int(time.time() * 1000),
-            })})
-
-            # Track daily Polymarket loss for per-strategy circuit breaker
+            # F3: accounting MUST run independently of the arb:orders bridge.
+            # Track daily Polymarket loss for per-strategy circuit breaker.
             if pnl < 0:
                 daily_loss_key = f"arb:risk:polymarket_daily_loss:{time.strftime('%Y%m%d')}"
                 await r.incrbyfloat(daily_loss_key, abs(pnl))
@@ -810,6 +801,25 @@ async def resolve_polymarket_bets():
             # Track per-asset win/loss hit rate
             asset_kind = f"{asset.split('/')[0].lower()}_{b.get('kind', 'updown')}"
             await r.hincrby(f"arb:poly:stats:{asset_kind}", "wins" if won else "losses", 1)
+
+            # F1: wire Polymarket PnL into arb:orders so DrawdownBreaker sees it.
+            # arb:orders is a Redis LIST (redis_bus.publish → lpush). The old
+            # r.xadd() created a Stream on a List key → WRONGTYPE every time,
+            # silently killing all accounting below it. Use the List bus and
+            # never let a bridge failure abort resolution accounting.
+            try:
+                await publish("arb:orders", {
+                    "event": "CLOSE",
+                    "pnl": pnl,
+                    "source": "polymarket",
+                    "strategy": "polymarket",
+                    "strategy_id": "polymarket",
+                    "market_type": "polymarket",
+                    "symbol": asset,
+                    "ts": int(time.time() * 1000),
+                })
+            except Exception as e:
+                print(f"[poly] WARN arb:orders bridge failed (PnL still resolved): {repr(e)[:160]}")
 
 
 async def status():
