@@ -134,6 +134,12 @@ services:
       - backend
       - frontend
     networks: [reyog]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost/nginx-health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
 
 volumes:
   redis_data:
