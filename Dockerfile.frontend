@@ -1,0 +1,48 @@
+# REYOG CAPITAL — Frontend (Next.js 16 standalone output)
+# Stage 1: install + build
+FROM node:20-alpine AS builder
+WORKDIR /app
+
+# Install deps (cache layer)
+COPY arb/dashboard/frontend/package.json arb/dashboard/frontend/package-lock.json* ./
+RUN npm install --legacy-peer-deps
+
+# Copy source + build
+COPY arb/dashboard/frontend/ ./
+
+# Build-time env (override with --build-arg)
+ARG NEXT_PUBLIC_API_URL=
+ARG NEXT_PUBLIC_WS_URL=
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \
+    NEXT_PUBLIC_WS_URL=$NEXT_PUBLIC_WS_URL \
+    NEXT_TELEMETRY_DISABLED=1
+
+RUN npm run build
+
+# Stage 2: minimal runtime
+FROM node:20-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production \
+    NEXT_TELEMETRY_DISABLED=1 \
+    PORT=3000
+
+# Non-root user
+RUN addgroup -g 1001 nodejs && adduser -S -u 1001 -G nodejs nextjs
+
+# Copy build artifacts (Next.js standalone mode produces minimal output)
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/public ./public
+
+USER nextjs
+EXPOSE 3000
+
+# Force Next.js to bind to all interfaces including loopback (default is hostname only)
+ENV HOSTNAME=0.0.0.0 \
+    PORT=3000
+
+# Healthcheck connects to the actual bound address (which is now 0.0.0.0:3000 incl loopback)
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD node -e "const net=require('net'); const s=net.createConnection({port:3000,host:'127.0.0.1'}); s.on('connect',()=>{s.end();process.exit(0)}); s.on('error',()=>process.exit(1)); setTimeout(()=>process.exit(1),3000)" || exit 1
+
+CMD ["node", "server.js"]

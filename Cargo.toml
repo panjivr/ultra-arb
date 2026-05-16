@@ -1,0 +1,3 @@
+[workspace]
+members = ["rust/hot_paths"]
+resolver = "2"

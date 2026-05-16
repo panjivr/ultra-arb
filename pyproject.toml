@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=70", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "ultra-arb"
+version = "0.1.0"
+description = "Ultra AI Arbitrage Trading System"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    # Core framework
+    "nautilus_trader==1.208.0",
+    # Exchange connectivity
+    "ccxt[async]>=4.4.0",
+    "py-clob-client>=0.18.0",
+    # Data & DB
+    "sqlalchemy[asyncio]>=2.0.0",
+    "asyncpg>=0.30.0",
+    "alembic>=1.14.0",
+    # Redis
+    "redis[hiredis]>=5.2.0",
+    # Config
+    "pydantic-settings>=2.7.0",
+    "python-dotenv>=1.0.0",
+    # ML/Quant
+    "numpy>=2.0.0",
+    "pandas>=2.2.0",
+    "scipy>=1.15.0",
+    "scikit-learn>=1.6.0",
+    "statsmodels>=0.14.0",
+    "hmmlearn>=0.3.0",
+    "pymc>=5.19.0",
+    # Scheduling
+    "apscheduler>=3.10.0",
+    # HTTP
+    "httpx>=0.28.0",
+    "websockets>=13.0",
+    # API
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    # Build (Rust extension)
+    "maturin>=1.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "mypy>=1.13.0",
+    "ruff>=0.8.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["arb*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

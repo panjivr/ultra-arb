@@ -1,0 +1,26 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.dll
+target/
+dist/
+*.egg-info/
+.pytest_cache/
+node_modules/
+.next/
+data/
+logs/
+runtime-logs/*.log
+deploy/*.tar.gz
+deploy/deploy_key
+.gstack/
+
+# G0 hardening
+*.tar.gz
+reyog-capital.tar.gz
+.claude/settings.local.json
+*.log

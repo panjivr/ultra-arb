@@ -1,0 +1,17 @@
+[package]
+name = "hot_paths"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "hot_paths"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.23", features = ["extension-module", "abi3-py312"] }
+ndarray = "0.16"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
