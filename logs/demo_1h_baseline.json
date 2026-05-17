@@ -1,0 +1,53 @@
+{
+  "label": "baseline",
+  "ts_utc": "2026-05-17T04:01:55Z",
+  "total_close_events": 323,
+  "total_pnl_real": -16.7044,
+  "total_pnl_poly": 0.0,
+  "crypto_stats": {
+    "n": 323,
+    "pnl": -16.7044,
+    "wins": 94,
+    "losses": 229
+  },
+  "poly_stats_orders": {
+    "n": 0,
+    "pnl": 0.0,
+    "wins": 0,
+    "losses": 0
+  },
+  "orders_by_source": {
+    "REAL": {
+      "n": 323,
+      "pnl": -16.7044,
+      "wins": 94,
+      "losses": 229
+    }
+  },
+  "arb_orders_len": "646",
+  "arb_signals_len": "18895",
+  "arb_poly_bets": "0",
+  "arb_poly_resolved": "0",
+  "risk_halted": "(empty)",
+  "redis_mem_mb": 103.82,
+  "container_restarts": {
+    "reyog_backend": 0,
+    "reyog_db": 0,
+    "reyog_edges": 0,
+    "reyog_engine": 0,
+    "reyog_frontend": 0,
+    "reyog_nginx": 0,
+    "reyog_redis": 0,
+    "reyog_risk": 0
+  },
+  "err_rate_per_min_last10m": {
+    "reyog_backend": 0.0,
+    "reyog_db": 0.0,
+    "reyog_edges": 0.0,
+    "reyog_engine": 0.0,
+    "reyog_frontend": 0.0,
+    "reyog_nginx": 0.0,
+    "reyog_redis": 0.0,
+    "reyog_risk": 0.0
+  }
+}

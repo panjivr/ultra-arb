@@ -1,0 +1,37 @@
+[2026-05-17T04:01:54Z] ========================================================
+[2026-05-17T04:01:54Z]   DEMO PAPER 1H — START
+[2026-05-17T04:01:54Z]   6 criteria — ALL must pass for LANJUT LIVE
+[2026-05-17T04:01:54Z]   NO Redis reset. Parallel-safe with window_24h_monitor.
+[2026-05-17T04:01:54Z] ========================================================
+[2026-05-17T04:01:54Z] T+0: Taking baseline snapshot...
+[2026-05-17T04:01:56Z] T+0 baseline: close_events=323, pnl_real=-16.7044, pnl_poly=0.0, redis=103.8MB
+[2026-05-17T04:21:58Z] T+20m: T+20 snapshot...
+[2026-05-17T04:21:59Z] T+20: new_trades=14, crypto_pnl_delta=$-0.6992, redis=104.8MB, risk_halted=False
+[2026-05-17T04:42:01Z] T+40m: T+40 snapshot...
+[2026-05-17T04:42:03Z] T+40: new_trades=36, crypto_pnl_delta=$-0.8621, redis=105.7MB, risk_halted=False
+[2026-05-17T05:02:05Z] T+60m: Final snapshot + verdict...
+[2026-05-17T05:02:06Z] T+60 FINAL: new_trades=43, crypto_pnl_delta=$-1.1479, poly_pnl_delta=$0.0000, redis=106.6MB
+[2026-05-17T05:02:06Z] 
+[2026-05-17T05:02:06Z] ══ VERDICT: PASS ══
+[2026-05-17T05:02:06Z]   ✅ container_stability: max restart delta = 0
+[2026-05-17T05:02:06Z]   ✅ error_rate: max = 0.0 errors/min
+[2026-05-17T05:02:06Z]   ✅ risk_system: halted_triggered = False, current = (empty)
+[2026-05-17T05:02:06Z]   ✅ pnl_drawdown: crypto pnl delta = $-1.1479
+[2026-05-17T05:02:06Z]   ✅ sample_size: new trades = 43
+[2026-05-17T05:02:06Z]   ✅ memory: redis = 106.6MB
+[2026-05-17T05:02:06Z] 
+[2026-05-17T05:02:06Z] Report: /home/reyogcapital165/reyog-capital/logs/demo_1h_FINAL_REPORT.md
+[2026-05-17T05:02:06Z] PASS — generating G4 setup artifacts...
+[2026-05-17T05:02:06Z] G4 artifacts written:
+[2026-05-17T05:02:06Z]   /home/reyogcapital165/reyog-capital/G4_SETUP_CHECKLIST.md
+[2026-05-17T05:02:06Z]   /home/reyogcapital165/reyog-capital/scripts/g4_micro_activate.py
+[2026-05-17T05:02:06Z] G4_SETUP_CHECKLIST.md + scripts/g4_micro_activate.py ready.
+[2026-05-17T05:02:06Z] Langkah selanjutnya:
+[2026-05-17T05:02:06Z]   1. Baca G4_SETUP_CHECKLIST.md
+[2026-05-17T05:02:06Z]   2. Isi wallet + API keys (MANUAL)
+[2026-05-17T05:02:06Z]   3. python scripts/g4_micro_activate.py --validate-only
+[2026-05-17T05:02:06Z]   4. python scripts/g4_micro_activate.py
+[2026-05-17T05:02:06Z]   JANGAN otomatis activate. User harus manual.
+[2026-05-17T05:02:06Z] ========================================================
+[2026-05-17T05:02:06Z]   DEMO 1H SELESAI — VERDICT: PASS
+[2026-05-17T05:02:06Z] ========================================================
