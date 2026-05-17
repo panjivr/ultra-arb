@@ -76,6 +76,8 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD:-reyog_redis_secret}@redis:6379/0
       DATABASE_URL: postgresql+asyncpg://${DB_USER:-arb}:${DB_PASSWORD:-arb_secret}@postgres:5432/${DB_NAME:-ultra_arb}
       PAPER_TRADE: "${PAPER_TRADE:-true}"
+      # G2/Pilihan B: false disables crypto signals/trades; Polymarket unaffected.
+      CRYPTO_STRATEGIES_ENABLED: "${CRYPTO_STRATEGIES_ENABLED:-true}"
     networks: [reyog]
     # Engine is a long-loop script — healthcheck via Redis ping (proves engine is publishing)
     healthcheck:

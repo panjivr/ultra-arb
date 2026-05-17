@@ -46,6 +46,18 @@ KELLY_FRACTION = 0.5  # half-Kelly for safety
 
 STRATEGIES = ["CrossExchange", "FundingRate", "Basis", "PolymarketArb"]
 
+# ── G2 / Pilihan B kill-switch ───────────────────────────────────────────────
+# Crypto cross-exchange edge proven negative twice (-$15/4.6h baseline,
+# -$1.15/1h demo). When CRYPTO_STRATEGIES_ENABLED=false the crypto trade
+# path (emit_signals -> arb:signals -> emit_trades -> source=REAL CLOSE)
+# is NOT started. emit_ticks stays up (engine healthcheck needs
+# arb:ticks:*), emit_funding stays up (harmless data), and the entire
+# Polymarket path (emit_polymarket_bets + resolve_polymarket_bets) is
+# untouched. Default true = no behavior change unless explicitly disabled.
+CRYPTO_STRATEGIES_ENABLED = os.environ.get(
+    "CRYPTO_STRATEGIES_ENABLED", "true"
+).strip().lower() not in ("false", "0", "no", "off")
+
 # In-memory live price cache: {symbol: {exchange: {bid, ask, mid, ts}}}
 prices: dict[str, dict[str, dict]] = {s: {} for s in SYMBOLS}
 # Recent mids for vol calc (per symbol)
@@ -877,8 +889,13 @@ async def main():
 
     # Now start emitters
     tasks.append(asyncio.create_task(emit_ticks()))
-    tasks.append(asyncio.create_task(emit_signals()))
-    tasks.append(asyncio.create_task(emit_trades()))
+    if CRYPTO_STRATEGIES_ENABLED:
+        tasks.append(asyncio.create_task(emit_signals()))
+        tasks.append(asyncio.create_task(emit_trades()))
+    else:
+        print("[real] CRYPTO_STRATEGIES_ENABLED=false — crypto "
+              "signals/trades DISABLED (G2 Pilihan B). "
+              "Polymarket path remains active.")
     tasks.append(asyncio.create_task(emit_funding()))
     tasks.append(asyncio.create_task(emit_polymarket_bets()))
     tasks.append(asyncio.create_task(resolve_polymarket_bets()))
