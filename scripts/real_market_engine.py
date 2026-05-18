@@ -595,11 +595,14 @@ async def emit_polymarket_bets():
     r = get_redis()
     print("[poly] multi-interval strategy started (5m/15m/30m/1h/4h/daily) — scan every 60s")
 
-    # Ensemble gate (lazy import avoids circular dep)
+    # Ensemble gate — G2.1: bypassed until edge detectors wire to emit_vote()
+    # Root cause: gate needs 3 independent clusters; only momentum (ClusterA) votes.
+    # arb:edges:votes had 5003 entries, arb:edges:approved = none (never approved).
+    # TODO G3: wire yesno_arb/smart_money/time_decay/news_reaction to emit_vote().
     try:
         from arb.edges.ensemble import evaluate as ensemble_evaluate, SignalVote, emit_vote
-        _ensemble_enabled = True
-        print("[poly] ensemble gate: ENABLED (3-of-ACTIVE independent clusters)")
+        _ensemble_enabled = False  # G2.1: bypass — only 1/4 clusters wired
+        print("[poly] ensemble gate: BYPASSED (G2.1 — 3-of-4 clusters not wired)")
     except ImportError:
         _ensemble_evaluate = None
         _ensemble_enabled = False

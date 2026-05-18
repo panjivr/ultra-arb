@@ -222,25 +222,27 @@ def detect_emergencies(state: dict) -> None:
             obs(f"EMERGENCY rule4: {c} error rate {n}/{tot} >5%.")
             open(EMERG_FILE, "a").write(f"rule4 {c} {n}/{tot}\n")
 
-    # rule5: publishing liveness — compare arb:orders+signals counts vs prev
-    cur = {"o": rcli("LLEN arb:orders"), "s": rcli("LLEN arb:signals"),
+    # rule5: publishing liveness — use BTC tick timestamp (works even when
+    # CRYPTO_STRATEGIES_ENABLED=false, since emit_ticks always runs).
+    # Old check (arb:signals LLEN) caused 23 false-positive restarts in G1.3
+    # because signals stop when crypto disabled.
+    cur = {"o": rcli("LLEN arb:orders"), "s": rcli("LLEN arb:ticks:BTC:USDT:GATE"),
            "b": rcli("LLEN arb:polymarket:bets")}
-    prevc = state.get("last_counts")
-    prevt = state.get("last_counts_ts", 0)
-    nowt = time.time()
-    if prevc and (nowt - prevt) >= 1800:  # 30 min elapsed
-        sig_a = int(cur["s"]) if cur["s"].isdigit() else 0
-        sig_b = int(prevc.get("s", "0") or 0)
-        if sig_a <= sig_b:  # signals are emitted constantly; stall = engine dead
-            obs("rule5: arb:signals not advanced in >=30m — engine publishing "
-                "stalled. Restarting reyog_engine.")
-            r = sh("docker restart reyog_engine")
-            obs(f"rule5 action: docker restart reyog_engine -> {r}")
-        state["last_counts"] = cur
-        state["last_counts_ts"] = nowt
-    elif not prevc:
-        state["last_counts"] = cur
-        state["last_counts_ts"] = nowt
+    try:
+        import json as _json
+        _raw = rcli("LINDEX arb:ticks:BTC:USDT:GATE 0")
+        if _raw and _raw not in ("(nil)", "", "(empty)"):
+            _tick_ts_ms = int(_json.loads(_raw).get("ts", 0))
+            _tick_age_min = (time.time() * 1000 - _tick_ts_ms) / 60000
+            if _tick_age_min > 10:
+                obs(f"rule5: last BTC/GATE tick is {_tick_age_min:.1f}m ago (>10m) "
+                    "— engine publishing stalled. Restarting reyog_engine.")
+                r = sh("docker restart reyog_engine")
+                obs(f"rule5 action: docker restart reyog_engine -> {r}")
+    except Exception:
+        pass  # tick parse error — don't restart on uncertainty
+    state["last_counts"] = cur
+    state["last_counts_ts"] = time.time()
 
 
 def best_worst(by_strategy: dict):
