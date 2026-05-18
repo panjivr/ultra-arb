@@ -1,0 +1,60 @@
+{
+  "ts_utc": "2026-05-17T23:00:15Z",
+  "elapsed_hours": 24.227,
+  "counts": {
+    "arb:orders": "1088",
+    "arb:signals": "34604",
+    "arb:polymarket:bets": "0",
+    "arb:poly:resolved": "0"
+  },
+  "poly_stats": {},
+  "risk_halted": "(empty)",
+  "polymarket_daily_loss": {},
+  "crypto_pnl": {
+    "n": 544,
+    "pnl": -26.7754,
+    "wins": 174,
+    "losses": 370
+  },
+  "polymarket_pnl": {},
+  "orders_breakdown": {
+    "close_events": 544,
+    "by_source": {
+      "REAL": {
+        "n": 544,
+        "pnl": -26.7754,
+        "wins": 174,
+        "losses": 370
+      }
+    },
+    "by_strategy": {
+      "CrossExchange": {
+        "n": 544,
+        "pnl": -26.7754,
+        "wins": 174,
+        "losses": 370
+      }
+    }
+  },
+  "container_restarts": {
+    "reyog_backend": 0,
+    "reyog_db": 0,
+    "reyog_edges": 0,
+    "reyog_engine": 0,
+    "reyog_frontend": 0,
+    "reyog_nginx": 0,
+    "reyog_redis": 0,
+    "reyog_risk": 0
+  },
+  "errors_last_6h": {
+    "reyog_backend": 0,
+    "reyog_db": 0,
+    "reyog_edges": 10,
+    "reyog_engine": 0,
+    "reyog_frontend": 0,
+    "reyog_nginx": 0,
+    "reyog_redis": 0,
+    "reyog_risk": 0
+  },
+  "redis_mem": "used_memory_human:123.98M"
+}
