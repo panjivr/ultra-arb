@@ -19,12 +19,59 @@ PRIVATE_KEY = os.environ.get("POLY_PRIVATE_KEY", "")
 WALLET_ADDRESS = os.environ.get("POLY_WALLET_ADDRESS", "")
 CHAIN_ID = int(os.environ.get("POLY_CHAIN_ID", "137"))
 
+# CTF Exchange V2 on Polygon — used to look up the Gnosis Safe wallet address
+CTF_EXCHANGE_V2 = "0xE111180000d2663C0091e4f400237545B87B996B"
+
 _client = None  # cached client singleton
+_safe_wallet_address: Optional[str] = None  # cached safe wallet address
+
+
+def _get_safe_wallet_address(eoa: str) -> str:
+    """
+    Compute the Polymarket Gnosis Safe wallet address for a given EOA by calling
+    getSafeWalletAddress(address) on the CTFExchangeV2 contract.
+
+    This is the correct `funder` for signature_type=2 (POLY_GNOSIS_SAFE) orders.
+    The Safe is deployed by Polymarket's relay deposit flow.
+    """
+    try:
+        import httpx as _httpx
+        from eth_utils import keccak as _keccak
+
+        sel = _keccak(text="getSafeWalletAddress(address)")[:4].hex()
+        addr_padded = eoa[2:].lower().zfill(64)
+        data = "0x" + sel + addr_padded
+
+        RPCS = [
+            "https://polygon-bor-rpc.publicnode.com",
+            "https://1rpc.io/matic",
+            "https://polygon-pokt.nodies.app",
+        ]
+        for rpc in RPCS:
+            try:
+                res = _httpx.post(rpc, json={
+                    "jsonrpc": "2.0", "method": "eth_call",
+                    "params": [{"to": CTF_EXCHANGE_V2, "data": data}, "latest"],
+                    "id": 1,
+                }, timeout=10)
+                result = res.json().get("result", "0x")
+                if result and len(result) >= 42:
+                    safe_addr = "0x" + result[-40:]
+                    return safe_addr
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    raise RuntimeError(
+        f"Could not compute Gnosis Safe wallet address for {eoa}. "
+        "Ensure polygon RPC is accessible."
+    )
 
 
 def setup_client():
     """Initialize and return ClobClient. Cached after first call."""
-    global _client
+    global _client, _safe_wallet_address
     if _client is not None:
         return _client
 
@@ -44,12 +91,17 @@ def setup_client():
     if not WALLET_ADDRESS:
         raise ValueError("POLY_WALLET_ADDRESS not set in environment")
 
+    # Compute the Gnosis Safe wallet address from the EOA.
+    # The Safe IS the actual on-chain holder of deposited funds.
+    # Using EOA as funder causes "maker address not allowed" errors.
+    _safe_wallet_address = _get_safe_wallet_address(WALLET_ADDRESS)
+
     client = ClobClient(
         host=HOST,
         key=PRIVATE_KEY,
         chain_id=CHAIN_ID,
-        signature_type=0,       # 0 = EOA (standard MetaMask wallet)
-        funder=WALLET_ADDRESS,
+        signature_type=2,       # 2 = POLY_GNOSIS_SAFE (matches the deployed Safe)
+        funder=_safe_wallet_address,
     )
     # Auto-derive L2 API creds from L1 private key (required for order ops)
     # v2 renamed create_or_derive_api_creds → create_or_derive_api_key
@@ -58,6 +110,11 @@ def setup_client():
 
     _client = client
     return _client
+
+
+def get_safe_wallet_address() -> Optional[str]:
+    """Return the cached Gnosis Safe wallet address (set after first setup_client() call)."""
+    return _safe_wallet_address
 
 
 def _get_onchain_native_usdc(wallet_address: str) -> float:
@@ -127,9 +184,9 @@ def check_wallet_balance() -> dict:
     else:
         total_allowance = int(allowances_raw or 0) / 1_000_000
 
-    # If CLOB shows $0, fall back to on-chain check.
-    # Relay deposits are tracked off-chain by Polymarket and not reflected in
-    # get_balance_allowance — but orders WILL work if Polymarket UI shows funds.
+    # With the correct funder=safe_wallet_address, the CLOB now correctly reports
+    # the relay deposit balance. relay_mode is kept for backward compat but should
+    # be False when funder is set correctly.
     relay_mode = False
     wallet_usdc = 0.0
     if clob_balance == 0.0 and WALLET_ADDRESS:
@@ -137,8 +194,6 @@ def check_wallet_balance() -> dict:
         relay_mode = True
 
     # Effective balance: CLOB balance OR on-chain wallet USDC (whichever is higher)
-    # The relay deposit itself is not directly queryable, so we signal relay_mode
-    # and let the caller decide whether to proceed.
     balance = max(clob_balance, wallet_usdc)
 
     return {
@@ -149,6 +204,7 @@ def check_wallet_balance() -> dict:
         "allowance_usdc": round(total_allowance, 6),
         "allowances_per_contract": allowances_raw,
         "wallet": WALLET_ADDRESS,
+        "safe_wallet": _safe_wallet_address,
         "raw": raw,
     }
 
