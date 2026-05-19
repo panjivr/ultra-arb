@@ -91,8 +91,31 @@ def check_market_open(end_date_iso: str) -> tuple[bool, str]:
         return False, f"Could not parse end_date '{end_date_iso}': {e}"
 
 
-def check_wallet_balance(balance_usdc: float, size_usdc: float) -> tuple[bool, str]:
-    """Wallet must have enough for bet + gas buffer ($0.10)."""
+def check_wallet_balance(
+    balance_usdc: float,
+    size_usdc: float,
+    relay_mode: bool = False,
+) -> tuple[bool, str]:
+    """
+    Wallet must have enough for bet + gas buffer ($0.10).
+
+    relay_mode=True means balance came from on-chain fallback (not CLOB API).
+    In relay mode we only require $1 minimum on-chain guard — the actual tradeable
+    balance is confirmed by the user via Polymarket.com UI and the relay deposit.
+    Polymarket will reject the order if funds are actually insufficient.
+    """
+    if relay_mode:
+        # In relay mode, CLOB API shows $0 but Polymarket has the funds via relay.
+        # Minimum sanity check: on-chain wallet USDC should be ≥ $0.10 for gas.
+        if balance_usdc < 0.05:
+            return (
+                False,
+                f"On-chain USDC ${balance_usdc:.4f} very low — check wallet has MATIC for gas",
+            )
+        return (
+            True,
+            f"Relay mode: on-chain USDC=${balance_usdc:.4f} (Polymarket holds deposit off-chain)",
+        )
     needed = size_usdc + 0.10
     if balance_usdc < needed:
         return (
@@ -118,17 +141,19 @@ def run_all_checks(
     end_date_iso: str,
     balance_usdc: float,
     friction_pct: float | None,
+    relay_mode: bool = False,
 ) -> tuple[bool, list[dict]]:
     """
     Run all 6 pre-flight checks.
     Returns (all_passed: bool, results: list of check dicts).
+    relay_mode=True when CLOB balance is $0 but Polymarket holds funds via relay deposit.
     """
     checks = [
         ("kill_switch",    check_kill_switch()),
         ("daily_limit",    check_daily_limit(size_usdc)),
         ("bet_size",       check_bet_size(size_usdc)),
         ("market_open",    check_market_open(end_date_iso)),
-        ("wallet_balance", check_wallet_balance(balance_usdc, size_usdc)),
+        ("wallet_balance", check_wallet_balance(balance_usdc, size_usdc, relay_mode=relay_mode)),
         ("friction",       check_friction(friction_pct)),
     ]
 

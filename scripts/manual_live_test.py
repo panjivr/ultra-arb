@@ -112,17 +112,23 @@ def cmd_setup(args: list) -> None:
     sep("Wallet Balance")
     try:
         bal = check_wallet_balance()
-        print(f"  Address:   {bal['wallet']}")
-        print(f"  USDC:      ${bal['balance_usdc']:.4f}")
-        print(f"  Allowance: ${bal['allowance_usdc']:.4f}")
-
-        if bal['allowance_usdc'] < 1.0:
-            print("\n  ⚠️  ALLOWANCE IS LOW")
-            print("     Before placing orders, you may need to approve USDC+CT tokens.")
-            print("     Run on Polymarket.com or use their approve flow.")
-            print("     Without approval, orders will fail with 'insufficient allowance'.")
+        print(f"  Address:      {bal['wallet']}")
+        print(f"  USDC (usable):{bal['balance_usdc']:.4f}")
+        if bal.get("relay_mode"):
+            print(f"  CLOB balance: ${bal.get('clob_balance_usdc',0):.4f}  ← relay deposit (off-chain)")
+            print(f"  On-chain USDC:${bal.get('wallet_usdc_onchain',0):.4f}  ← wallet remainder")
+            print()
+            print("  ℹ️  RELAY MODE: Your deposit was made via Polymarket relay contract.")
+            print("     CLOB API shows $0 but your Polymarket.com balance IS available.")
+            print("     Orders will be accepted by Polymarket if funds are there.")
+            print("     ✅ Check polymarket.com/profile to confirm your balance.")
         else:
-            print("  ✅ Allowance sufficient for trading")
+            print(f"  USDC:      ${bal['balance_usdc']:.4f}")
+            print(f"  Allowance: ${bal['allowance_usdc']:.4f}")
+            if bal['allowance_usdc'] < 1.0:
+                print("\n  ⚠️  ALLOWANCE IS LOW — may need approval for on-chain orders.")
+            else:
+                print("  ✅ Allowance sufficient for trading")
     except Exception as e:
         print(f"  ❌ Balance check failed: {e}")
         return
@@ -261,10 +267,16 @@ def cmd_dry_run(args: list) -> None:
     sep("Wallet Balance")
     try:
         bal = check_wallet_balance()
-        print(f"  Balance: ${bal['balance_usdc']:.4f} USDC")
+        relay_mode = bal.get("relay_mode", False)
+        if relay_mode:
+            print(f"  Mode:    RELAY (Polymarket holds funds off-chain)")
+            print(f"  On-chain:${bal.get('wallet_usdc_onchain', 0):.4f} USDC remaining in wallet")
+        else:
+            print(f"  Balance: ${bal['balance_usdc']:.4f} USDC")
     except Exception as e:
         print(f"  ❌ Balance check failed: {e}")
-        bal = {"balance_usdc": 0.0}
+        bal = {"balance_usdc": 0.0, "relay_mode": False}
+        relay_mode = False
 
     # Calculate friction
     sep("Friction Estimate")
@@ -293,7 +305,7 @@ def cmd_dry_run(args: list) -> None:
         check_kill_switch(),
         check_daily_limit(cost_usdc),
         check_bet_size(cost_usdc),
-        chk_bal(bal["balance_usdc"], cost_usdc),
+        chk_bal(bal["balance_usdc"], cost_usdc, relay_mode=relay_mode),
         check_friction(fr.get("total_friction_pct")),
     ]
     for (ok, reason) in checks:
@@ -359,7 +371,12 @@ def cmd_place(args: list) -> None:
     try:
         bal = check_wallet_balance()
         balance_usdc = bal["balance_usdc"]
-        print(f"  Wallet balance: ${balance_usdc:.4f} USDC")
+        relay_mode = bal.get("relay_mode", False)
+        if relay_mode:
+            print(f"  Balance mode:   RELAY (Polymarket holds funds off-chain)")
+            print(f"  On-chain USDC:  ${bal.get('wallet_usdc_onchain', 0):.4f} (wallet remainder)")
+        else:
+            print(f"  Wallet balance: ${balance_usdc:.4f} USDC")
     except Exception as e:
         print(f"❌ Balance check failed: {e}")
         return
@@ -378,6 +395,7 @@ def cmd_place(args: list) -> None:
         end_date_iso="2099-01-01T00:00:00Z",  # placeholder — user verified manually
         balance_usdc=balance_usdc,
         friction_pct=friction_pct,
+        relay_mode=relay_mode,
     )
 
     sep("Safety Checks")
