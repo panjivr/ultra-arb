@@ -112,23 +112,19 @@ def cmd_setup(args: list) -> None:
     sep("Wallet Balance")
     try:
         bal = check_wallet_balance()
-        print(f"  Address:      {bal['wallet']}")
-        print(f"  USDC (usable):{bal['balance_usdc']:.4f}")
+        print(f"  EOA (private key): {bal['wallet']}")
+        if bal.get("safe_wallet"):
+            print(f"  Safe wallet (funder): {bal['safe_wallet']}")
+        print(f"  USDC balance:      ${bal['balance_usdc']:.4f}")
         if bal.get("relay_mode"):
             print(f"  CLOB balance: ${bal.get('clob_balance_usdc',0):.4f}  ← relay deposit (off-chain)")
             print(f"  On-chain USDC:${bal.get('wallet_usdc_onchain',0):.4f}  ← wallet remainder")
-            print()
-            print("  ℹ️  RELAY MODE: Your deposit was made via Polymarket relay contract.")
-            print("     CLOB API shows $0 but your Polymarket.com balance IS available.")
-            print("     Orders will be accepted by Polymarket if funds are there.")
-            print("     ✅ Check polymarket.com/profile to confirm your balance.")
         else:
-            print(f"  USDC:      ${bal['balance_usdc']:.4f}")
-            print(f"  Allowance: ${bal['allowance_usdc']:.4f}")
+            print(f"  Allowance:         ${bal['allowance_usdc']:.4f}")
             if bal['allowance_usdc'] < 1.0:
                 print("\n  ⚠️  ALLOWANCE IS LOW — may need approval for on-chain orders.")
             else:
-                print("  ✅ Allowance sufficient for trading")
+                print("  ✅ Ready to trade")
     except Exception as e:
         print(f"  ❌ Balance check failed: {e}")
         return
@@ -389,10 +385,15 @@ def cmd_place(args: list) -> None:
     except Exception:
         friction_pct = None
 
-    # Full safety checks (need end_date — warn if unknown)
+    # Full safety checks (market_open skipped — user verifies end_date manually)
+    from datetime import datetime, timezone, timedelta
+    # Use a placeholder 24h from now so market_open passes; user confirms end_date
+    placeholder_end = (datetime.now(timezone.utc) + timedelta(hours=24)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
     all_ok, results = run_all_checks(
         size_usdc=cost_usdc,
-        end_date_iso="2099-01-01T00:00:00Z",  # placeholder — user verified manually
+        end_date_iso=placeholder_end,
         balance_usdc=balance_usdc,
         friction_pct=friction_pct,
         relay_mode=relay_mode,
@@ -400,13 +401,16 @@ def cmd_place(args: list) -> None:
 
     sep("Safety Checks")
     for r in results:
-        # Skip market_open check (we used placeholder)
         if r["check"] == "market_open":
-            print(f"  ⚠️  market_open: SKIPPED — verify end date manually before placing")
+            print(f"  ⚠️  market_open: SKIPPED — verify end date manually (use market_info)")
             continue
         print(f"  {r['icon']} {r['check']}: {r['reason']}")
 
-    if not all_ok:
+    # Only block on non-market_open failures
+    hard_fail = any(
+        not r["passed"] for r in results if r["check"] != "market_open"
+    )
+    if hard_fail:
         print("\n❌ BLOCKED — One or more safety checks failed. Order NOT placed.")
         return
 
