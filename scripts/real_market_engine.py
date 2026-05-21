@@ -462,6 +462,43 @@ def _classify_market(question: str) -> tuple[str, float | None]:
     """
     import re
     q = question.lower()
+
+    # F4 FIX: parse the explicit ET time window first. Polymarket crypto
+    # "Up or Down" markets carry their real duration in the title, e.g.
+    #   "... - May 21, 7:45AM-7:50AM ET"  → 5 min
+    #   "... - May 21, 4:45PM-5:00PM ET"  → 15 min
+    # The old code blindly returned ("4h", 4.0) for ALL "up or down" markets,
+    # which made the probability model project momentum over the wrong horizon.
+    tw = re.search(
+        r"(\d{1,2}):(\d{2})\s*(am|pm)\s*[-–]\s*(\d{1,2}):(\d{2})\s*(am|pm)", q
+    )
+    if tw:
+        h1, m1, ap1, h2, m2, ap2 = tw.groups()
+
+        def _to_min(h, m, ap):
+            h = int(h) % 12
+            if ap == "pm":
+                h += 12
+            return h * 60 + int(m)
+
+        dur = _to_min(h2, m2, ap2) - _to_min(h1, m1, ap1)
+        if dur < 0:
+            dur += 24 * 60  # window crosses midnight
+        if dur <= 0:
+            dur = 5
+        hours = dur / 60.0
+        if dur <= 5:
+            return ("5m", hours)
+        if dur <= 15:
+            return ("15m", hours)
+        if dur <= 30:
+            return ("30m", hours)
+        if dur <= 60:
+            return ("1h", hours)
+        if dur <= 240:
+            return ("4h", hours)
+        return ("daily", hours)
+
     # Quick interval-suffix patterns
     if re.search(r"\b5\s*m(in)?\b", q): return ("5m", 5/60)
     if re.search(r"\b15\s*m(in)?\b", q): return ("15m", 15/60)
@@ -471,8 +508,9 @@ def _classify_market(question: str) -> tuple[str, float | None]:
     if re.search(r"daily", q): return ("daily", 24.0)
     if re.search(r"weekly", q): return ("weekly", 168.0)
     if re.search(r"up or down", q):
-        # ET time window — Polymarket uses 4-hour windows for these
-        return ("4h", 4.0)
+        # No parseable window — assume a short 1h horizon (conservative),
+        # not the old 4h default.
+        return ("1h", 1.0)
     return ("other", None)
 
 
@@ -487,29 +525,81 @@ def _detect_asset(question: str) -> str | None:
     return None
 
 
+# Effective seconds between recent_mids samples. The fetch loops append a mid
+# per exchange roughly every ~0.6s; with ~2 exchanges the combined cadence is
+# ~3 samples/sec, so deque(maxlen=120) holds ~40s of price history.
+_MID_SAMPLE_SEC = 0.35
+
+
 def _updown_probability(asset_price: float, recent_mids: list[float],
                          hours_horizon: float) -> float:
     """
-    P(price ends UP at horizon) using short-term momentum + drift.
-    Returns probability between 0.3 and 0.7 (we won't claim more conviction).
+    P(price ends UP at horizon) from recent momentum — honest calibration.
+
+    Hard truths this version respects:
+      1. recent_mids holds only ~40s of data (deque maxlen=120 @ ~3/s), NOT
+         the 1-sample/sec the old code assumed (samples_per_hour=3600 was wrong).
+      2. 40s of momentum barely predicts 5-min direction and says ~nothing about
+         multi-hour direction → confidence must decay as horizon >> data window.
+      3. A noisy per-sample mean must not be extrapolated unless it is
+         statistically significant → t-stat gate + shrinkage.
+      4. Short-term crypto direction is near-random → conviction capped to
+         [0.42, 0.58]. When there is no real signal we return 0.5 (→ no bet).
     """
-    if asset_price <= 0 or len(recent_mids) < 10 or hours_horizon <= 0:
+    n = len(recent_mids)
+    if asset_price <= 0 or n < 30 or hours_horizon <= 0:
         return 0.5
-    # Momentum: last 50 returns
-    rets = [(recent_mids[i]/recent_mids[i-1] - 1) for i in range(1, len(recent_mids))]
-    recent = rets[-30:] if len(rets) >= 30 else rets
-    mean_ret = sum(recent) / len(recent)
-    var = sum((r - mean_ret) ** 2 for r in recent) / max(len(recent) - 1, 1)
+
+    # Log returns over the sample window
+    rets = []
+    for i in range(1, n):
+        a, b = recent_mids[i - 1], recent_mids[i]
+        if a > 0 and b > 0:
+            rets.append(math.log(b / a))
+    m = len(rets)
+    if m < 20:
+        return 0.5
+
+    mean_ret = sum(rets) / m
+    var = sum((r - mean_ret) ** 2 for r in rets) / (m - 1)
     std = var ** 0.5
-    # Annualize the sample → horizon estimate (assume 1s samples → 3600/hr)
-    samples_per_hour = 3600
-    drift_horizon = mean_ret * samples_per_hour * hours_horizon
-    sigma_horizon = std * math.sqrt(samples_per_hour * hours_horizon)
-    if sigma_horizon <= 0:
+    if std <= 0:
         return 0.5
-    # P(end > start) = P(ret > 0) = 1 - CDF((0 - drift) / sigma) = 1 - CDF(-drift/sigma)
-    z = -drift_horizon / sigma_horizon
-    return max(0.30, min(0.70, 1 - _normal_cdf(z)))
+
+    # Statistical significance of the drift: t = mean / (std/sqrt(m)).
+    # Below ~2 sigma the "momentum" is indistinguishable from noise → 50/50.
+    t_stat = mean_ret / (std / math.sqrt(m))
+    if abs(t_stat) < 2.0:
+        return 0.5
+
+    # James-Stein-style shrinkage: damp the estimate by how far past the
+    # significance floor it is (t=2 → 0 weight, t→∞ → full weight).
+    shrink = max(0.0, 1.0 - (2.0 / abs(t_stat)) ** 2)
+
+    # Raw Brownian z-score for "ends up" over the horizon (no damping yet).
+    # z = (mean/std) * sqrt(N); for any bet-worthy signal this saturates the
+    # CDF, so the RAW probability is not where honesty lives — the damping is.
+    window_sec = m * _MID_SAMPLE_SEC
+    horizon_sec = hours_horizon * 3600.0
+    n_h = horizon_sec / _MID_SAMPLE_SEC
+    sigma_h = std * math.sqrt(n_h)
+    if sigma_h <= 0:
+        return 0.5
+    z = (mean_ret * n_h) / sigma_h
+    p_raw = _normal_cdf(z)
+
+    # Horizon suitability: a ~40s window predicts the next few minutes with some
+    # skill, multi-hour direction with ~none. Full-ish credit out to ~10x the
+    # data window, decaying toward 0 beyond. This is applied to the DEVIATION
+    # from 0.5 so it can never be masked by the conviction cap.
+    horizon_fit = 1.0 / (1.0 + horizon_sec / (10.0 * window_sec))
+
+    # Final probability: scale the raw deviation by significance + horizon fit.
+    deviation = (p_raw - 0.5) * shrink * horizon_fit
+    p_up = 0.5 + deviation
+
+    # Tight conviction cap — we are not psychic about crypto direction.
+    return max(0.42, min(0.58, p_up))
 
 
 def _score_market(m: dict, asset: str, asset_price: float,
