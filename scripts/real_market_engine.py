@@ -747,9 +747,63 @@ async def emit_polymarket_bets():
                 break
 
 
+async def _fetch_poly_resolution(market_id, condition_id) -> dict | None:
+    """Fetch the REAL Polymarket settlement for a market.
+
+    A market is settled when gamma-api reports closed=true; the winning outcome
+    is the one whose outcomePrices entry is ~1.0 (loser ~0.0). This is the
+    authoritative Polymarket oracle result — NOT a feed-based approximation.
+
+    Returns {"closed": bool, "winning_outcome": str|None, "outcome_prices": [...]}
+    or None on fetch error.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(8, connect=4)) as client:
+            m = None
+            # Prefer fetch by market id path — works for closed markets, no filter
+            if market_id:
+                rr = await client.get(f"https://gamma-api.polymarket.com/markets/{market_id}")
+                if rr.status_code == 200:
+                    m = rr.json()
+            # Fallback: query by condition_ids
+            if m is None and condition_id:
+                rr = await client.get(
+                    "https://gamma-api.polymarket.com/markets",
+                    params={"condition_ids": condition_id},
+                )
+                arr = rr.json() if rr.status_code == 200 else []
+                m = arr[0] if isinstance(arr, list) and arr else None
+            if not m:
+                return None
+            closed = bool(m.get("closed"))
+            outcomes = m.get("outcomes") or "[]"
+            oprices = m.get("outcomePrices") or "[]"
+            if isinstance(outcomes, str):
+                outcomes = json.loads(outcomes)
+            if isinstance(oprices, str):
+                oprices = json.loads(oprices)
+            winning = None
+            if closed and len(outcomes) == len(oprices) and outcomes:
+                for o, p in zip(outcomes, oprices):
+                    try:
+                        if float(p) >= 0.99:
+                            winning = o
+                            break
+                    except Exception:
+                        pass
+            return {"closed": closed, "winning_outcome": winning, "outcome_prices": oprices}
+    except Exception as e:
+        print(f"[poly] resolution fetch err: {repr(e)[:120]}")
+        return None
+
+
 async def resolve_polymarket_bets():
-    """Periodically check open bets — resolve when endDate passes.
-    Handles both 'range' bets (BTC between $X-$Y) and 'updown' bets (Up/Down)."""
+    """Periodically check open bets — resolve using REAL Polymarket settlement.
+
+    Win/loss is taken from the actual Polymarket oracle outcome (gamma-api
+    closed=true + winning outcome), NOT from our own price feed. A bet stays
+    'open' until Polymarket itself has resolved the market.
+    """
     from arb.infra.redis_bus import publish, get_redis, latest
     r = get_redis()
     from datetime import datetime, timezone
@@ -782,30 +836,31 @@ async def resolve_polymarket_bets():
                 continue
 
             asset = b.get("asset", "BTC/USDT")
+
+            # REAL Polymarket settlement — query the actual oracle outcome.
+            # Do NOT approximate win/loss from our own price feed.
+            res = await _fetch_poly_resolution(b.get("market_id"), b.get("condition_id"))
+            if not res or not res.get("closed") or res.get("winning_outcome") is None:
+                # Polymarket has not officially resolved this market yet.
+                # Keep the bet 'open' and re-check next cycle — never guess.
+                continue
+
+            winning_outcome = str(res["winning_outcome"]).strip().lower()
+            our_side = str(b.get("side", "")).strip().lower()
+            won = (our_side == winning_outcome)
+
+            # Informational only — current feed price at resolve time (not used
+            # for win/loss; the Polymarket oracle outcome above is authoritative).
             asset_now = 0
             for ex, p in prices.get(asset, {}).items():
                 asset_now = p["mid"]
                 break
-            if asset_now <= 0:
-                continue
 
-            won = False
-            details = {}
-            if b.get("kind") == "range":
-                low = float(b.get("range_low", 0) or 0)
-                high = float(b.get("range_high", 0) or 0)
-                in_range = low <= asset_now <= high
-                # Side is the actual outcome label, but for range markets it's Yes/No
-                side = b["side"].lower()
-                won = (side == "yes" and in_range) or (side == "no" and not in_range)
-                details = {"in_range": in_range, "low": low, "high": high}
-            elif b.get("kind") == "updown":
-                # Asset went up if current > price at bet time
-                entry_asset = float(b.get("asset_price_at_bet", 0) or 0)
-                went_up = asset_now > entry_asset
-                side = b["side"].lower()
-                won = (side == "up" and went_up) or (side == "down" and not went_up)
-                details = {"went_up": went_up, "entry_asset_price": entry_asset}
+            details = {
+                "winning_outcome": res["winning_outcome"],
+                "outcome_prices": res.get("outcome_prices"),
+                "settlement": "polymarket_oracle",
+            }
 
             entry_price = b.get("entry_price", 0.5)
             payout = b["stake_usd"] / entry_price if entry_price > 0 else b["stake_usd"]

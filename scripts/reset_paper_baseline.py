@@ -24,8 +24,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from arb.infra.redis_bus import get_redis, close_redis
 
-CLEAR_KEYS = ["arb:orders", "arb:signals"]
-CLEAR_PATTERNS = ["arb:risk:polymarket_daily_loss:*", "arb:risk:daily_loss:*"]
+CLEAR_KEYS = [
+    "arb:orders", "arb:signals",
+    # Polymarket paper state — clear for a fully clean real-data run
+    "arb:polymarket:bets", "arb:poly:resolved", "arb:risk:halted",
+]
+CLEAR_PATTERNS = [
+    "arb:risk:polymarket_daily_loss:*", "arb:risk:daily_loss:*",
+    "arb:poly:seen:*",     # let engine re-bet markets fresh
+    "arb:poly:stats:*",    # reset per-asset win/loss hit-rate
+]
 
 
 async def main() -> None:
@@ -33,9 +41,13 @@ async def main() -> None:
     report = {}
 
     for key in CLEAR_KEYS:
-        n = await r.llen(key)
+        # Key may be a list, set, or string — delete works for all types.
+        try:
+            ktype = await r.type(key)
+        except Exception:
+            ktype = "?"
         await r.delete(key)
-        report[key] = f"deleted ({n} entries)"
+        report[key] = f"deleted (type={ktype})"
 
     for pat in CLEAR_PATTERNS:
         keys = [k async for k in r.scan_iter(match=pat)]
