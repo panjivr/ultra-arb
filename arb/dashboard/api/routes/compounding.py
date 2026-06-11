@@ -14,6 +14,35 @@ router = APIRouter(prefix="/api", tags=["compounding"])
 
 
 async def _wallet_capital(r) -> tuple[float, bool, str | None, int]:
+    """Multi-wallet schema: sum balances, return earliest linked_at."""
+    # Try new schema
+    try:
+        raw_addrs = await r.smembers("arb:wallet:list")
+        addrs = [a.decode() if isinstance(a, bytes) else a for a in (raw_addrs or [])]
+        if addrs:
+            total = 0.0
+            first_addr = None
+            earliest = None
+            for a in addrs:
+                wraw = await r.get(f"arb:wallet:linked:{a.lower()}")
+                if not wraw:
+                    continue
+                d = json.loads(wraw)
+                total += float(d.get("usdc_balance", 0) or 0)
+                if first_addr is None:
+                    first_addr = d.get("address")
+                la = int(d.get("linked_at", 0) or 0)
+                if la and (earliest is None or la < earliest):
+                    earliest = la
+            if total > 0:
+                active_raw = await r.get("arb:wallet:active")
+                if active_raw:
+                    first_addr = active_raw.decode() if isinstance(active_raw, bytes) else active_raw
+                return total, True, first_addr, earliest or 0
+    except Exception:
+        pass
+
+    # Legacy fallback
     raw = await r.get("arb:wallet:linked")
     if not raw:
         return 10_000.0, False, None, 0

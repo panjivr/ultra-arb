@@ -58,23 +58,10 @@ CRYPTO_STRATEGIES_ENABLED = os.environ.get(
     "CRYPTO_STRATEGIES_ENABLED", "true"
 ).strip().lower() not in ("false", "0", "no", "off")
 
-# POLYMARKET_ONLY_MODE: hard-disable all non-Polymarket emitters. Keep ticks
-# (needed for asset price feed) and Polymarket strategy. Use this when crypto
-# spot/perp edge is negative and we want to bet ONLY on prediction markets
-# until we prove profitability.
-POLYMARKET_ONLY_MODE = os.environ.get(
-    "POLYMARKET_ONLY_MODE", "false"
-).strip().lower() in ("true", "1", "yes", "on")
-if POLYMARKET_ONLY_MODE:
-    CRYPTO_STRATEGIES_ENABLED = False  # imply crypto disabled when poly-only
-
 # In-memory live price cache: {symbol: {exchange: {bid, ask, mid, ts}}}
 prices: dict[str, dict[str, dict]] = {s: {} for s in SYMBOLS}
-# Recent mids for vol calc (per symbol) — short window
+# Recent mids for vol calc (per symbol)
 recent_mids: dict[str, deque] = {s: deque(maxlen=120) for s in SYMBOLS}
-# Timestamped price history for window-lag arbitrage: (ts_ms, mid)
-# ~3 samples/s × 2400 = ~13 min of history → covers any 5m/15m window lookback
-price_history: dict[str, deque] = {s: deque(maxlen=2400) for s in SYMBOLS}
 
 # Counters
 counters = {"ticks": 0, "signals": 0, "trades": 0, "errors": 0, "fetches": 0}
@@ -98,47 +85,8 @@ async def _record_latency(r, stage: str, ns: int):
 
 
 async def _get_capital(r) -> tuple[float, bool, str | None]:
-    """Read trading capital — active wallet USDC if linked, else demo.
-
-    Schema (multi-wallet support):
-      arb:wallet:active           → active wallet address (string)
-      arb:wallet:linked:{addr}    → JSON snapshot per wallet
-      arb:wallet:list             → Set of all linked addresses (for SUM mode)
-
-    Fallback to legacy single-wallet key for backward compat.
-    """
+    """Read trading capital — wallet USDC if linked, else demo."""
     try:
-        # New multi-wallet schema
-        active_raw = await r.get("arb:wallet:active")
-        if active_raw:
-            active_addr = active_raw.decode() if isinstance(active_raw, bytes) else active_raw
-            wallet_raw = await r.get(f"arb:wallet:linked:{active_addr.lower()}")
-            if wallet_raw:
-                d = json.loads(wallet_raw)
-                usdc = float(d.get("usdc_balance", 0) or 0)
-                if usdc > 0:
-                    return usdc, True, d.get("address")
-
-        # Sum across ALL linked wallets if no single active
-        try:
-            addrs = await r.smembers("arb:wallet:list")
-            if addrs:
-                total = 0.0
-                first_addr = None
-                for raw_addr in addrs:
-                    addr = raw_addr.decode() if isinstance(raw_addr, bytes) else raw_addr
-                    wraw = await r.get(f"arb:wallet:linked:{addr.lower()}")
-                    if wraw:
-                        d = json.loads(wraw)
-                        total += float(d.get("usdc_balance", 0) or 0)
-                        if first_addr is None:
-                            first_addr = d.get("address")
-                if total > 0:
-                    return total, True, first_addr
-        except Exception:
-            pass
-
-        # Legacy fallback
         raw = await r.get("arb:wallet:linked")
         if raw:
             d = json.loads(raw)
@@ -179,16 +127,11 @@ async def fetch_loop(ex_name: str, ex_factory):
                 if not bid or not ask:
                     continue
                 mid = (bid + ask) / 2
-                _now_ms = int(time.time() * 1000)
                 prices[sym][ex_name] = {
                     "bid": bid, "ask": ask, "mid": mid,
-                    "ts": _now_ms,
+                    "ts": int(time.time() * 1000),
                 }
                 recent_mids[sym].append(mid)
-                # Timestamped history for window-lag arb (use first exchange only
-                # to avoid double-rate; both exchanges track near-identical mid)
-                if ex_name == next(iter(EXCHANGES)):
-                    price_history[sym].append((_now_ms, mid))
                 counters["fetches"] += 1
                 if first_log:
                     print(f"[real] {ex_name} {sym}: ${mid:,.4f}")
@@ -519,43 +462,6 @@ def _classify_market(question: str) -> tuple[str, float | None]:
     """
     import re
     q = question.lower()
-
-    # F4 FIX: parse the explicit ET time window first. Polymarket crypto
-    # "Up or Down" markets carry their real duration in the title, e.g.
-    #   "... - May 21, 7:45AM-7:50AM ET"  → 5 min
-    #   "... - May 21, 4:45PM-5:00PM ET"  → 15 min
-    # The old code blindly returned ("4h", 4.0) for ALL "up or down" markets,
-    # which made the probability model project momentum over the wrong horizon.
-    tw = re.search(
-        r"(\d{1,2}):(\d{2})\s*(am|pm)\s*[-–]\s*(\d{1,2}):(\d{2})\s*(am|pm)", q
-    )
-    if tw:
-        h1, m1, ap1, h2, m2, ap2 = tw.groups()
-
-        def _to_min(h, m, ap):
-            h = int(h) % 12
-            if ap == "pm":
-                h += 12
-            return h * 60 + int(m)
-
-        dur = _to_min(h2, m2, ap2) - _to_min(h1, m1, ap1)
-        if dur < 0:
-            dur += 24 * 60  # window crosses midnight
-        if dur <= 0:
-            dur = 5
-        hours = dur / 60.0
-        if dur <= 5:
-            return ("5m", hours)
-        if dur <= 15:
-            return ("15m", hours)
-        if dur <= 30:
-            return ("30m", hours)
-        if dur <= 60:
-            return ("1h", hours)
-        if dur <= 240:
-            return ("4h", hours)
-        return ("daily", hours)
-
     # Quick interval-suffix patterns
     if re.search(r"\b5\s*m(in)?\b", q): return ("5m", 5/60)
     if re.search(r"\b15\s*m(in)?\b", q): return ("15m", 15/60)
@@ -565,9 +471,8 @@ def _classify_market(question: str) -> tuple[str, float | None]:
     if re.search(r"daily", q): return ("daily", 24.0)
     if re.search(r"weekly", q): return ("weekly", 168.0)
     if re.search(r"up or down", q):
-        # No parseable window — assume a short 1h horizon (conservative),
-        # not the old 4h default.
-        return ("1h", 1.0)
+        # ET time window — Polymarket uses 4-hour windows for these
+        return ("4h", 4.0)
     return ("other", None)
 
 
@@ -582,82 +487,29 @@ def _detect_asset(question: str) -> str | None:
     return None
 
 
-# Effective seconds between recent_mids samples. The fetch loops append a mid
-# per exchange roughly every ~0.6s; with ~2 exchanges the combined cadence is
-# ~3 samples/sec, so deque(maxlen=120) holds ~40s of price history.
-_MID_SAMPLE_SEC = 0.35
-
-
 def _updown_probability(asset_price: float, recent_mids: list[float],
                          hours_horizon: float) -> float:
     """
-    P(price ends UP at horizon) from recent momentum — honest calibration.
-
-    Hard truths this version respects:
-      1. recent_mids holds only ~40s of data (deque maxlen=120 @ ~3/s), NOT
-         the 1-sample/sec the old code assumed (samples_per_hour=3600 was wrong).
-      2. 40s of momentum barely predicts 5-min direction and says ~nothing about
-         multi-hour direction → confidence must decay as horizon >> data window.
-      3. A noisy per-sample mean must not be extrapolated unless it is
-         statistically significant → t-stat gate + shrinkage.
-      4. Short-term crypto direction is near-random → conviction capped to
-         [0.42, 0.58]. When there is no real signal we return 0.5 (→ no bet).
+    P(price ends UP at horizon) using short-term momentum + drift.
+    Returns probability between 0.3 and 0.7 (we won't claim more conviction).
     """
-    n = len(recent_mids)
-    if asset_price <= 0 or n < 30 or hours_horizon <= 0:
+    if asset_price <= 0 or len(recent_mids) < 10 or hours_horizon <= 0:
         return 0.5
-
-    # Log returns over the sample window
-    rets = []
-    for i in range(1, n):
-        a, b = recent_mids[i - 1], recent_mids[i]
-        if a > 0 and b > 0:
-            rets.append(math.log(b / a))
-    m = len(rets)
-    if m < 20:
-        return 0.5
-
-    mean_ret = sum(rets) / m
-    var = sum((r - mean_ret) ** 2 for r in rets) / (m - 1)
+    # Momentum: last 50 returns
+    rets = [(recent_mids[i]/recent_mids[i-1] - 1) for i in range(1, len(recent_mids))]
+    recent = rets[-30:] if len(rets) >= 30 else rets
+    mean_ret = sum(recent) / len(recent)
+    var = sum((r - mean_ret) ** 2 for r in recent) / max(len(recent) - 1, 1)
     std = var ** 0.5
-    if std <= 0:
+    # Annualize the sample → horizon estimate (assume 1s samples → 3600/hr)
+    samples_per_hour = 3600
+    drift_horizon = mean_ret * samples_per_hour * hours_horizon
+    sigma_horizon = std * math.sqrt(samples_per_hour * hours_horizon)
+    if sigma_horizon <= 0:
         return 0.5
-
-    # Statistical significance of the drift: t = mean / (std/sqrt(m)).
-    # Below ~1.5 sigma the "momentum" is mostly noise → 50/50.
-    # 1.5 sigma is intentionally permissive — we apply heavy shrinkage below
-    # and cap conviction to [0.42, 0.58] anyway, so noise can't blow us up.
-    t_stat = mean_ret / (std / math.sqrt(m))
-    if abs(t_stat) < 1.5:
-        return 0.5
-
-    # Shrinkage: damp the estimate by how far past the significance floor it is.
-    shrink = max(0.0, 1.0 - (1.5 / abs(t_stat)) ** 2)
-
-    # Raw Brownian z-score for "ends up" over the horizon (no damping yet).
-    # z = (mean/std) * sqrt(N); for any bet-worthy signal this saturates the
-    # CDF, so the RAW probability is not where honesty lives — the damping is.
-    window_sec = m * _MID_SAMPLE_SEC
-    horizon_sec = hours_horizon * 3600.0
-    n_h = horizon_sec / _MID_SAMPLE_SEC
-    sigma_h = std * math.sqrt(n_h)
-    if sigma_h <= 0:
-        return 0.5
-    z = (mean_ret * n_h) / sigma_h
-    p_raw = _normal_cdf(z)
-
-    # Horizon suitability: a ~40s window predicts the next few minutes with some
-    # skill, multi-hour direction with ~none. Full-ish credit out to ~10x the
-    # data window, decaying toward 0 beyond. This is applied to the DEVIATION
-    # from 0.5 so it can never be masked by the conviction cap.
-    horizon_fit = 1.0 / (1.0 + horizon_sec / (10.0 * window_sec))
-
-    # Final probability: scale the raw deviation by significance + horizon fit.
-    deviation = (p_raw - 0.5) * shrink * horizon_fit
-    p_up = 0.5 + deviation
-
-    # Tight conviction cap — we are not psychic about crypto direction.
-    return max(0.42, min(0.58, p_up))
+    # P(end > start) = P(ret > 0) = 1 - CDF((0 - drift) / sigma) = 1 - CDF(-drift/sigma)
+    z = -drift_horizon / sigma_horizon
+    return max(0.30, min(0.70, 1 - _normal_cdf(z)))
 
 
 def _score_market(m: dict, asset: str, asset_price: float,
@@ -733,34 +585,30 @@ def _size_bet(capital: float, p_win: float, entry_price: float,
 async def emit_polymarket_bets():
     """
     Scan Polymarket crypto markets every 60s.
+    Pipeline: fetch → score → ensemble gate → size (KellyPositionSizer) → publish.
 
-    AI ensemble pipeline (inline, sub-second):
-      1. Fetch active crypto markets from gamma-api
-      2. For each market, gather signals:
-         - Momentum: P(Up) from our 40s tick history (cluster A)
-         - Whale alignment: query Polymarket trades for this condition_id (cluster C)
-         - News alignment: match recent high-impact news to this asset (cluster D)
-         - Liquidity gate: skip markets with < $500 liq
-         - Calibration: per-asset/per-interval hit rate from past bets
-      3. Ensemble decide: require >= 2 independent signals agreeing
-      4. Size with Kelly half-fraction, scaled by calibration multiplier
-      5. Publish bet + record for future calibration
+    Set POLYMARKET_ONLY=true to suppress spot/perp signals and run this path only.
+    seen_conditions persisted in Redis (24h TTL) to survive restarts.
     """
     from arb.infra.redis_bus import publish, get_redis
-    from arb.edges.poly_intelligence import (
-        whale_alignment, news_alignment, liquidity_ok,
-        ensemble_decide, calibration_multiplier, get_calibration,
-    )
-    from arb.edges.window_lag import window_lag_signal
     from datetime import datetime, timezone
     r = get_redis()
-    print("[poly] WINDOW-LAG arbitrage strategy started — real edge only, 30s scan")
+    print("[poly] multi-interval strategy started (5m/15m/30m/1h/4h/daily) — scan every 60s")
+
+    # Ensemble gate (lazy import avoids circular dep)
+    try:
+        from arb.edges.ensemble import evaluate as ensemble_evaluate, SignalVote, emit_vote
+        _ensemble_enabled = True
+        print("[poly] ensemble gate: ENABLED (3-of-ACTIVE independent clusters)")
+    except ImportError:
+        _ensemble_evaluate = None
+        _ensemble_enabled = False
+        print("[poly] ensemble gate: DISABLED (import failed)")
 
     SEEN_KEY_PREFIX = "arb:poly:seen:"  # Redis key per condition_id, 24h TTL
 
     while True:
-        # 20s scan: window-lag needs to catch the final ~60s of 5-min windows.
-        await asyncio.sleep(20)
+        await asyncio.sleep(60)
 
         # Guard 1: cross-process halt flag (set by RiskRunner)
         if await r.get("arb:risk:halted"):
@@ -809,124 +657,52 @@ async def emit_polymarket_bets():
             try:
                 op = json.loads(m.get("outcomePrices") or "[]")
                 yes_price = float(op[0])
+                # Bounds validation — reject API garbage
                 if not (0.01 < yes_price < 0.99):
                     continue
                 outcomes = json.loads(m.get("outcomes") or "[]")
-                if not outcomes or len(outcomes) < 2:
-                    continue
             except Exception:
                 continue
 
-            # ── Classify FIRST so liquidity gate is interval-aware ──
-            interval_label_pre, _hours_pre = _classify_market(q)
-            short_term = interval_label_pre in ("5m", "15m", "30m", "1h")
-            if short_term:
-                min_liq, min_vol = 30, 5   # very small per-window markets
-            else:
-                min_liq, min_vol = 200, 30
-            if not liquidity_ok(m, min_liquidity_usd=min_liq, min_volume_usd=min_vol):
-                continue
-
-            # Classify (for interval label + range detection)
-            _op2, range_low, range_high, interval_label, is_updown, kind = \
+            our_prob, range_low, range_high, interval_label, is_updown, kind = \
                 _score_market(m, asset, asset_price, mids)
 
-            # ════════════════════════════════════════════════════════════════
-            #  PRIMARY EDGE: WINDOW-LAG ARBITRAGE (Up/Down markets only)
-            #  Bet the direction the underlying has ALREADY moved when the
-            #  Polymarket price lags. This is the only genuine AI-speed edge
-            #  here — momentum-guessing was a coin flip (proven WR 44.6%).
-            # ════════════════════════════════════════════════════════════════
-            decision = None
-            edge_source = None
-            lag_meta = {}
-            if is_updown:
-                hist = list(price_history.get(asset, deque()))
-                # Realised hourly vol from recent mids (for reversal probability)
-                if len(mids) > 10:
-                    rr = [(mids[i]/mids[i-1] - 1) for i in range(1, len(mids))]
-                    per = (sum(x*x for x in rr) / len(rr)) ** 0.5
-                    hourly_vol = max(0.003, min(0.06, per * math.sqrt(3600)))
-                else:
-                    hourly_vol = 0.02
-                lag = window_lag_signal(
-                    history=hist,
-                    question=q,
-                    end_date_iso=m.get("endDate"),
-                    current_mid=asset_price,
-                    now_ms=time.time() * 1000,
-                    hourly_vol=hourly_vol,
-                    outcomes=outcomes,
-                )
-                if lag:
-                    # Market-implied prob of OUR side
-                    if lag["side"].lower() == outcomes[0].lower():
-                        market_p = yes_price
-                    else:
-                        market_p = 1 - yes_price
-                    entry_price = market_p
-                    p_win = lag["p_win"]
-                    edge = p_win - market_p
-                    # Require real edge: our prob meaningfully above market price.
-                    # Tighter for 5m (more execution risk), looser for longer.
-                    min_edge = 0.08 if interval_label == "5m" else 0.06
-                    if edge >= min_edge and entry_price > 0.02:
-                        decision = {
-                            "side": lag["side"],
-                            "entry_price": entry_price,
-                            "our_prob": p_win,
-                            "edge_bps": edge * 10_000,
-                        }
-                        edge_source = "window_lag"
-                        lag_meta = lag
-
-            # ── SECONDARY EDGE: whale alignment on bigger-stake markets ──
-            # Only when no lag signal; whales betting heavy = informed flow.
-            if decision is None:
-                whale = None
-                try:
-                    whale = await whale_alignment(cond, min_stake_usd=100, window_seconds=900)
-                except Exception:
-                    pass
-                if whale and whale.get("max_whale_usd", 0) >= 300 and whale.get("imbalance_ratio", 0) >= 2.0:
-                    wdir = (whale.get("direction") or "").lower()
-                    outcomes_low = [o.lower() for o in outcomes]
-                    if wdir in outcomes_low:
-                        side_w = outcomes[outcomes_low.index(wdir)]
-                        market_p = yes_price if side_w.lower() == outcomes[0].lower() else (1 - yes_price)
-                        # Whale conviction → modest prob bump over market
-                        p_win = min(0.72, market_p + whale["confidence"] * 0.15)
-                        edge = p_win - market_p
-                        if edge >= 0.05 and market_p > 0.02:
-                            decision = {
-                                "side": side_w,
-                                "entry_price": market_p,
-                                "our_prob": p_win,
-                                "edge_bps": edge * 10_000,
-                            }
-                            edge_source = "whale"
-                            lag_meta = {"whale": whale}
-
-            # No real edge → DON'T BET. (Honest: most scans produce no bet.)
-            if decision is None:
+            if our_prob is None:
                 continue
 
-            side = decision["side"]
-            entry_price = decision["entry_price"]
-            p_win = decision["our_prob"]
-            edge_bps = decision["edge_bps"]
-            exploration = False
+            edge = our_prob - yes_price
+            min_edge = 0.04 if interval_label in ("5m", "15m") else 0.05
+            if abs(edge) < min_edge:
+                continue
 
-            # ── Calibration multiplier (history-aware sizing) ──
-            calib_mult = await calibration_multiplier(asset, interval_label)
-            if calib_mult <= 0.0:
-                continue  # historically losing this segment — skip
+            side = outcomes[0] if edge > 0 else outcomes[1]
+            entry_price = yes_price if edge > 0 else (1 - yes_price)
+            p_win = our_prob if edge > 0 else (1 - our_prob)
 
-            # ── Size with Kelly × calibration ──
+            # Step 3: ensemble gate — emit vote, check approval
+            if _ensemble_enabled:
+                from arb.edges.ensemble import SignalVote, emit_vote, evaluate as ens_eval
+                vote = SignalVote(
+                    condition_id=cond,
+                    direction="yes" if edge > 0 else "no",
+                    confidence=min(1.0, abs(edge) * 5),  # scale edge to 0-1 confidence
+                    source="momentum",  # this detector is price-derived
+                    asset=asset,
+                    kind=kind,
+                    ts=int(time.time() * 1000),
+                )
+                await emit_vote(vote)
+                approved, ens_direction, ens_meta = await ens_eval(cond)
+                if not approved:
+                    continue  # wait for more signal agreement
+                # Use ensemble direction if it differs from our score
+                if ens_direction and ens_direction != ("yes" if edge > 0 else "no"):
+                    side = outcomes[1] if ens_direction == "yes" else outcomes[0]
+                    p_win = 1 - p_win
+                    entry_price = 1 - entry_price
+
+            # Step 4: size using KellyPositionSizer (no inline Kelly)
             stake, kelly_f, ev_usd = _size_bet(capital, p_win, entry_price, interval_label)
-            stake = round(stake * calib_mult, 2)
-            # Hard cap per bet: 1% of capital for real edges (we have conviction)
-            stake = min(stake, round(capital * 0.01, 2))
             if stake < 1.0:
                 continue
 
@@ -942,100 +718,35 @@ async def emit_polymarket_bets():
                 "side": side,
                 "stake_usd": stake,
                 "entry_price": round(entry_price, 4),
-                "implied_prob": round(yes_price, 4),
+                "implied_prob": round(yes_price if edge > 0 else (1 - yes_price), 4),
                 "our_prob": round(p_win, 4),
-                "edge_bps": round(edge_bps, 1),
-                "expected_value_usd": round(ev_usd * calib_mult, 3),
+                "edge_bps": round(edge * 10_000, 1),
+                "expected_value_usd": round(ev_usd, 3),
                 "asset_price_at_bet": round(asset_price, 4),
                 "range_low": range_low,
                 "range_high": range_high,
-                "hours_to_resolve": None,
+                "hours_to_resolve": None,  # computed in _score_market
                 "status": "open",
                 "end_date": m.get("endDate"),
-                "kelly_fraction": round(kelly_f * calib_mult, 4),
-                "calibration_mult": round(calib_mult, 2),
+                "kelly_fraction": round(kelly_f, 4),
                 "capital_at_bet": round(capital, 2),
                 "is_real_wallet": is_real,
                 "source": "engine",
-                "exploration": exploration,
-                # WHY we bet — the real edge metadata
-                "edge_source": edge_source,
-                "edge_detail": lag_meta,
             }
 
-            # Step 5: publish + mark seen in Redis (per-condition, expires at window close)
+            # Step 5: publish + mark seen in Redis (24h TTL, survives restarts)
             await publish("arb:polymarket:bets", bet)
             await r.set(seen_key, "1", ex=86400)
             bets_placed_this_cycle += 1
-            detail = ""
-            if edge_source == "window_lag":
-                detail = lag_meta.get("reason", "")
-            elif edge_source == "whale":
-                w = lag_meta.get("whale", {})
-                detail = f"whale ${w.get('max_whale_usd',0):.0f} x{w.get('imbalance_ratio',0):.1f}"
             print(f"[poly] BET [{interval_label}] {side} ${stake:.2f} on {asset} "
-                  f"edge={edge_bps:.0f}bps via {edge_source} ({detail}) calib_x{calib_mult:.2f}")
-            if bets_placed_this_cycle >= 8:
+                  f"'{q[:50]}…' edge={edge*100:.1f}% EV=${ev_usd:.2f}")
+            if bets_placed_this_cycle >= 5:
                 break
 
 
-async def _fetch_poly_resolution(market_id, condition_id) -> dict | None:
-    """Fetch the REAL Polymarket settlement for a market.
-
-    A market is settled when gamma-api reports closed=true; the winning outcome
-    is the one whose outcomePrices entry is ~1.0 (loser ~0.0). This is the
-    authoritative Polymarket oracle result — NOT a feed-based approximation.
-
-    Returns {"closed": bool, "winning_outcome": str|None, "outcome_prices": [...]}
-    or None on fetch error.
-    """
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(8, connect=4)) as client:
-            m = None
-            # Prefer fetch by market id path — works for closed markets, no filter
-            if market_id:
-                rr = await client.get(f"https://gamma-api.polymarket.com/markets/{market_id}")
-                if rr.status_code == 200:
-                    m = rr.json()
-            # Fallback: query by condition_ids
-            if m is None and condition_id:
-                rr = await client.get(
-                    "https://gamma-api.polymarket.com/markets",
-                    params={"condition_ids": condition_id},
-                )
-                arr = rr.json() if rr.status_code == 200 else []
-                m = arr[0] if isinstance(arr, list) and arr else None
-            if not m:
-                return None
-            closed = bool(m.get("closed"))
-            outcomes = m.get("outcomes") or "[]"
-            oprices = m.get("outcomePrices") or "[]"
-            if isinstance(outcomes, str):
-                outcomes = json.loads(outcomes)
-            if isinstance(oprices, str):
-                oprices = json.loads(oprices)
-            winning = None
-            if closed and len(outcomes) == len(oprices) and outcomes:
-                for o, p in zip(outcomes, oprices):
-                    try:
-                        if float(p) >= 0.99:
-                            winning = o
-                            break
-                    except Exception:
-                        pass
-            return {"closed": closed, "winning_outcome": winning, "outcome_prices": oprices}
-    except Exception as e:
-        print(f"[poly] resolution fetch err: {repr(e)[:120]}")
-        return None
-
-
 async def resolve_polymarket_bets():
-    """Periodically check open bets — resolve using REAL Polymarket settlement.
-
-    Win/loss is taken from the actual Polymarket oracle outcome (gamma-api
-    closed=true + winning outcome), NOT from our own price feed. A bet stays
-    'open' until Polymarket itself has resolved the market.
-    """
+    """Periodically check open bets — resolve when endDate passes.
+    Handles both 'range' bets (BTC between $X-$Y) and 'updown' bets (Up/Down)."""
     from arb.infra.redis_bus import publish, get_redis, latest
     r = get_redis()
     from datetime import datetime, timezone
@@ -1068,31 +779,30 @@ async def resolve_polymarket_bets():
                 continue
 
             asset = b.get("asset", "BTC/USDT")
-
-            # REAL Polymarket settlement — query the actual oracle outcome.
-            # Do NOT approximate win/loss from our own price feed.
-            res = await _fetch_poly_resolution(b.get("market_id"), b.get("condition_id"))
-            if not res or not res.get("closed") or res.get("winning_outcome") is None:
-                # Polymarket has not officially resolved this market yet.
-                # Keep the bet 'open' and re-check next cycle — never guess.
-                continue
-
-            winning_outcome = str(res["winning_outcome"]).strip().lower()
-            our_side = str(b.get("side", "")).strip().lower()
-            won = (our_side == winning_outcome)
-
-            # Informational only — current feed price at resolve time (not used
-            # for win/loss; the Polymarket oracle outcome above is authoritative).
             asset_now = 0
             for ex, p in prices.get(asset, {}).items():
                 asset_now = p["mid"]
                 break
+            if asset_now <= 0:
+                continue
 
-            details = {
-                "winning_outcome": res["winning_outcome"],
-                "outcome_prices": res.get("outcome_prices"),
-                "settlement": "polymarket_oracle",
-            }
+            won = False
+            details = {}
+            if b.get("kind") == "range":
+                low = float(b.get("range_low", 0) or 0)
+                high = float(b.get("range_high", 0) or 0)
+                in_range = low <= asset_now <= high
+                # Side is the actual outcome label, but for range markets it's Yes/No
+                side = b["side"].lower()
+                won = (side == "yes" and in_range) or (side == "no" and not in_range)
+                details = {"in_range": in_range, "low": low, "high": high}
+            elif b.get("kind") == "updown":
+                # Asset went up if current > price at bet time
+                entry_asset = float(b.get("asset_price_at_bet", 0) or 0)
+                went_up = asset_now > entry_asset
+                side = b["side"].lower()
+                won = (side == "up" and went_up) or (side == "down" and not went_up)
+                details = {"went_up": went_up, "entry_asset_price": entry_asset}
 
             entry_price = b.get("entry_price", 0.5)
             payout = b["stake_usd"] / entry_price if entry_price > 0 else b["stake_usd"]
@@ -1117,20 +827,6 @@ async def resolve_polymarket_bets():
             # Track per-asset win/loss hit rate
             asset_kind = f"{asset.split('/')[0].lower()}_{b.get('kind', 'updown')}"
             await r.hincrby(f"arb:poly:stats:{asset_kind}", "wins" if won else "losses", 1)
-
-            # NEW: per-asset/per-interval calibration record (consumed by
-            # poly_intelligence.calibration_multiplier on future bets)
-            try:
-                from arb.edges.poly_intelligence import record_outcome
-                await record_outcome(
-                    asset=asset,
-                    interval=str(b.get("interval", "?")),
-                    kind=str(b.get("kind", "updown")),
-                    won=won,
-                    edge_bps=float(b.get("edge_bps", 0) or 0),
-                )
-            except Exception as _e:
-                pass
 
             # F1: wire Polymarket PnL into arb:orders so DrawdownBreaker sees it.
             # arb:orders is a Redis LIST (redis_bus.publish → lpush). The old
@@ -1198,12 +894,9 @@ async def main():
         tasks.append(asyncio.create_task(emit_trades()))
     else:
         print("[real] CRYPTO_STRATEGIES_ENABLED=false — crypto "
-              "signals/trades DISABLED. Polymarket path remains active.")
-    if POLYMARKET_ONLY_MODE:
-        print("[real] POLYMARKET_ONLY_MODE=true — funding emitter DISABLED. "
-              "Pure Polymarket focus until profitability proven.")
-    else:
-        tasks.append(asyncio.create_task(emit_funding()))
+              "signals/trades DISABLED (G2 Pilihan B). "
+              "Polymarket path remains active.")
+    tasks.append(asyncio.create_task(emit_funding()))
     tasks.append(asyncio.create_task(emit_polymarket_bets()))
     tasks.append(asyncio.create_task(resolve_polymarket_bets()))
     tasks.append(asyncio.create_task(status()))

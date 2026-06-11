@@ -130,42 +130,68 @@ async def get_bets(limit: int = 50):
 
 @router.get("/pnl")
 async def polymarket_pnl():
-    """Aggregated PnL from Polymarket bets."""
-    bets = await latest("arb:polymarket:bets", count=1000)
-    total_staked = 0.0
-    total_won = 0.0
-    total_lost = 0.0
-    open_bets = 0
-    resolved = 0
-    win_count = 0
-    loss_count = 0
+    """Aggregated PnL from Polymarket bets.
+
+    Three correctness fixes:
+      1. DEDUP: arb:polymarket:bets is append-only — each bet appears as an
+         'open' entry AND later a 'won'/'lost' entry. We collapse by bet id,
+         keeping the most-resolved status, so nothing is double-counted.
+      2. NET: realized profit = Σ(payout - stake) on wins − Σ(stake) on losses.
+         (total_won was payout incl. stake; subtracting only losses double-counted
+         the win stakes.)
+      3. ROI: denominator = stake on RESOLVED bets only, not open positions.
+    """
+    raw = await latest("arb:polymarket:bets", count=4000)
+
+    # Collapse by id — prefer resolved status over open
+    _RANK = {"open": 0, "won": 1, "lost": 1}
+    by_id: dict[str, dict] = {}
+    for b in raw:
+        bid = b.get("id")
+        if not bid:
+            continue
+        cur = by_id.get(bid)
+        if cur is None or _RANK.get(b.get("status"), 0) >= _RANK.get(cur.get("status"), 0):
+            by_id[bid] = b
+    bets = list(by_id.values())
+
+    open_bets = open_stake = 0.0
+    win_count = loss_count = 0
+    profit_on_wins = 0.0     # Σ(payout - stake)
+    loss_on_losses = 0.0     # Σ(stake)
+    resolved_stake = 0.0
+
     for b in bets:
         stake = float(b.get("stake_usd", 0) or 0)
-        total_staked += stake
         st = b.get("status", "open")
-        if st == "open":
-            open_bets += 1
-        elif st == "won":
-            resolved += 1
+        if st == "won":
             win_count += 1
-            total_won += float(b.get("payout_usd", 0) or 0)
+            payout = float(b.get("payout_usd", 0) or 0)
+            profit_on_wins += (payout - stake)
+            resolved_stake += stake
         elif st == "lost":
-            resolved += 1
             loss_count += 1
-            total_lost += stake
-    net = total_won - total_lost
+            loss_on_losses += stake
+            resolved_stake += stake
+        else:
+            open_bets += 1
+            open_stake += stake
+
+    resolved = win_count + loss_count
+    net = profit_on_wins - loss_on_losses
     return {
         "total_bets": len(bets),
-        "open": open_bets,
+        "open": int(open_bets),
+        "open_stake_usd": round(open_stake, 2),
         "resolved": resolved,
         "wins": win_count,
         "losses": loss_count,
         "win_rate": round(win_count / max(resolved, 1) * 100, 2),
-        "total_staked_usd": round(total_staked, 2),
-        "total_won_usd": round(total_won, 2),
-        "total_lost_usd": round(total_lost, 2),
+        "resolved_staked_usd": round(resolved_stake, 2),
+        "gross_profit_usd": round(profit_on_wins, 2),
+        "gross_loss_usd": round(loss_on_losses, 2),
         "net_pnl_usd": round(net, 2),
-        "roi_pct": round(net / max(total_staked, 1) * 100, 2),
+        "roi_pct": round(net / max(resolved_stake, 1) * 100, 2),
     }
 
 

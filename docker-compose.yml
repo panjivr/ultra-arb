@@ -78,6 +78,10 @@ services:
       PAPER_TRADE: "${PAPER_TRADE:-true}"
       # G2/Pilihan B: false disables crypto signals/trades; Polymarket unaffected.
       CRYPTO_STRATEGIES_ENABLED: "${CRYPTO_STRATEGIES_ENABLED:-true}"
+      # POLYMARKET_ONLY_MODE: true → engine runs ONLY Polymarket strategy
+      # (ticks stay up for asset price feed; funding emitter off; spot/perp off).
+      # Use until prediction-market profitability is proven.
+      POLYMARKET_ONLY_MODE: "${POLYMARKET_ONLY_MODE:-false}"
     networks: [reyog]
     # Engine is a long-loop script — healthcheck via Redis ping (proves engine is publishing)
     healthcheck:

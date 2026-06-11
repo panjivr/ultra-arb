@@ -22,12 +22,49 @@ DEMO_ACCOUNT_START = 10_000.0
 async def _account_start_capital() -> tuple[float, bool, str | None, int]:
     """Return (start_capital, is_real_wallet, wallet_addr, linked_at_ms).
 
-    linked_at_ms is 0 when no wallet (demo mode). When a wallet is connected,
-    stats / equity ONLY count trades after linked_at_ms — so the curve starts
-    from the real wallet balance and grows from there.
+    Multi-wallet schema:
+      arb:wallet:active      → currently active address
+      arb:wallet:linked:{a}  → JSON per wallet
+      arb:wallet:list        → set of all addresses
+
+    Sums all linked wallet balances if user has multiple connected.
+    linked_at = earliest linked_at across wallets, so equity tracks since
+    first wallet connect.
     """
     try:
         r = get_redis()
+
+        # Collect ALL linked wallets
+        addrs = []
+        try:
+            raw_addrs = await r.smembers("arb:wallet:list")
+            addrs = [a.decode() if isinstance(a, bytes) else a for a in (raw_addrs or [])]
+        except Exception:
+            pass
+
+        if addrs:
+            total = 0.0
+            first_addr = None
+            earliest_linked = None
+            for a in addrs:
+                wraw = await r.get(f"arb:wallet:linked:{a.lower()}")
+                if not wraw:
+                    continue
+                d = json.loads(wraw)
+                total += float(d.get("usdc_balance", 0) or 0)
+                if first_addr is None:
+                    first_addr = d.get("address")
+                la = int(d.get("linked_at", 0) or 0)
+                if la and (earliest_linked is None or la < earliest_linked):
+                    earliest_linked = la
+            if total > 0:
+                # Prefer "active" wallet address for display
+                active_raw = await r.get("arb:wallet:active")
+                if active_raw:
+                    first_addr = active_raw.decode() if isinstance(active_raw, bytes) else active_raw
+                return total, True, first_addr, earliest_linked or 0
+
+        # Legacy fallback
         raw = await r.get("arb:wallet:linked")
         if raw:
             data = json.loads(raw)
