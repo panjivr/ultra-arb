@@ -134,17 +134,17 @@ export default function PolymarketPanel() {
                     </div>
                     {b.status === "open" && (
                       <div className="text-[9px] text-gray-500 mt-1">
-                        resolves in {b.hours_to_resolve.toFixed(1)}h · our prob {(b.our_prob * 100).toFixed(1)}% vs market {(b.implied_prob * 100).toFixed(1)}%
+                        resolves {b.hours_to_resolve != null ? `in ${b.hours_to_resolve.toFixed(1)}h` : "soon"} · our prob {((b.our_prob ?? 0) * 100).toFixed(1)}% vs market {((b.implied_prob ?? 0) * 100).toFixed(1)}%
                       </div>
                     )}
                     {b.status === "won" && b.payout_usd && (
                       <div className="text-[10px] text-green-400 mt-1">
-                        +${(b.payout_usd - b.stake_usd).toFixed(2)} profit · BTC closed ${b.btc_at_resolve?.toFixed(0)}
+                        +${(b.payout_usd - b.stake_usd).toFixed(2)} profit{b.btc_at_resolve != null ? ` · BTC closed $${b.btc_at_resolve.toFixed(0)}` : ""}
                       </div>
                     )}
                     {b.status === "lost" && (
                       <div className="text-[10px] text-red-400 mt-1">
-                        -${b.stake_usd.toFixed(2)} · BTC closed ${b.btc_at_resolve?.toFixed(0)}
+                        -${b.stake_usd.toFixed(2)}{b.btc_at_resolve != null ? ` · BTC closed $${b.btc_at_resolve.toFixed(0)}` : ""}
                       </div>
                     )}
                   </div>
@@ -172,13 +172,4 @@ export default function PolymarketPanel() {
                   </span>
                   <span className="text-gray-500">·</span>
                   <span className="text-amber-300">vol ${(m.volume / 1000).toFixed(1)}k</span>
-                  <span className="text-gray-500">liq ${(m.liquidity / 1000).toFixed(1)}k</span>
-                </div>
-              </a>
-            ))}
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
+                  <span className="text-gray-500">liq ${(m.liquidity / 1000).toFixed(1)}k</s
