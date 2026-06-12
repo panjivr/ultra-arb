@@ -5,12 +5,12 @@ PAPER_TRADE=false → real exchange execution via CCXT.
 """
 import asyncio
 import time
-import json
+from collections import deque
 import ccxt.async_support as ccxt_async
 from arb.config import settings
 from arb.risk.risk_runner import RiskRunner
 from arb.risk.sizing import KellyPositionSizer
-from arb.infra.redis_bus import get_redis, publish
+from arb.infra.redis_bus import publish, latest
 
 
 class LiveExecutor:
@@ -45,18 +45,31 @@ class LiveExecutor:
             self._bybit.set_sandbox_mode(True)
 
     async def _signal_consumer(self) -> None:
-        r = get_redis()
-        last_id = "$"
+        """Consume arb:signals — a Redis LIST (publish() → LPUSH), NOT a Stream.
+
+        The old r.xread() raised WRONGTYPE on every poll, so LiveExecutor never
+        executed a single signal. Mirror the engine's emit_trades() pattern:
+        non-destructive latest() read, track the newest processed signal_ts,
+        dedupe, and ignore the startup backlog (act on new signals only).
+        """
+        last_seen_ts = int(time.time() * 1000)  # ignore backlog; only new signals
+        seen: deque = deque(maxlen=500)          # dedupe processed signals
         while True:
             try:
-                results = await r.xread({"arb:signals": last_id}, count=10, block=200)
-                if results:
-                    for _, messages in results:
-                        for msg_id, fields in messages:
-                            last_id = msg_id
-                            data = json.loads(fields["data"])
-                            if data.get("tradeable") and not self._risk.is_halted:
-                                await self._execute(data)
+                signals = await latest("arb:signals", 50)
+                # latest() is newest-first → process oldest-first
+                for sig in reversed(signals):
+                    sig_ts = int(sig.get("signal_ts") or sig.get("ts") or 0)
+                    if sig_ts <= last_seen_ts:
+                        continue
+                    dedupe_key = (sig_ts, sig.get("symbol"), sig.get("spread_bps_real"))
+                    if dedupe_key in seen:
+                        continue
+                    seen.append(dedupe_key)
+                    last_seen_ts = max(last_seen_ts, sig_ts)
+                    if sig.get("tradeable") and not self._risk.is_halted:
+                        await self._execute(sig)
+                await asyncio.sleep(0.2)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -67,7 +80,7 @@ class LiveExecutor:
         strategy = signal.get("strategy", "")
         symbol = signal.get("symbol", "")
         prob = signal.get("probability_score", 0.5)
-        rr = signal.get("risk_reward", 1.0)
+        rr = signal.get("risk_reward_ratio", signal.get("risk_reward", 1.0))
         regime = signal.get("regime", 1)
         liq = signal.get("liquidity_score", 0.7)
 

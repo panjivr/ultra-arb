@@ -18,6 +18,15 @@ router = APIRouter(tags=["firehose"])
 
 # 10ms loop = 100Hz push rate
 PUSH_INTERVAL = 0.01
+# Per-poll batch cap per stream — large enough to cover a burst between polls.
+MAX_BATCH = 200
+
+
+def _entry_ts(raw: str) -> int:
+    try:
+        return int(json.loads(raw).get("ts", 0) or 0)
+    except Exception:
+        return 0
 
 # Streams to firehose — all REAL market data + signals + orders + alerts
 WATCHED_PATTERNS = [
@@ -47,10 +56,15 @@ async def firehose(ws: WebSocket):
     await ws.accept()
     r = get_redis()
     streams = await _resolve_streams(r)
-    indices: dict[str, int] = {s: 0 for s in streams}
-    # On connect, seed indices to current tail (don't dump all history)
+    # Timestamp cursor per stream (epoch ms). An index/llen cursor breaks once a
+    # capped list saturates (llen stops growing while items keep flowing through
+    # the head), silently killing the feed. The newest `ts` survives the cap.
+    last_ts: dict[str, int] = {}
+    now_ms = int(time.time() * 1000)
     for s in streams:
-        indices[s] = await r.llen(s)
+        head = await r.lindex(s, 0)
+        # Seed to the newest existing item so we don't dump history on connect.
+        last_ts[s] = _entry_ts(head) if head else now_ms
 
     last_refresh = time.time()
     msg_count = 0
@@ -67,27 +81,30 @@ async def firehose(ws: WebSocket):
             t0 = time.perf_counter_ns()
             messages = []
             for stream in streams:
-                cur_len = await r.llen(stream)
-                idx = indices[stream]
-                if cur_len <= idx:
-                    indices[stream] = cur_len
+                seen_ts = last_ts.get(stream, 0)
+                # O(1) head peek — skip the lrange when nothing is new. Works at
+                # the cap, where llen no longer changes but the head still moves.
+                head = await r.lindex(stream, 0)
+                if head is None:
                     continue
-                # New items at indices [0, cur_len - idx)
-                new_count = cur_len - idx
-                # New items live at LIST head (LPUSH)
-                raw_items = await r.lrange(stream, 0, new_count - 1)
-                # Process newest-first → oldest
+                head_ts = _entry_ts(head)
+                if head_ts <= seen_ts:
+                    continue
+                # New items live at the LIST head (LPUSH); read newest-first.
+                raw_items = await r.lrange(stream, 0, MAX_BATCH - 1)
                 for item in raw_items:
                     try:
                         d = json.loads(item)
-                        ts = d.get("ts", 0)
-                        now_ms = int(time.time() * 1000)
-                        d["_lag_ms"] = max(0, now_ms - ts) if ts else 0
-                        d["_stream"] = stream
-                        messages.append(d)
                     except Exception:
                         continue
-                indices[stream] = cur_len
+                    ts = int(d.get("ts", 0) or 0)
+                    if ts <= seen_ts:
+                        continue
+                    now_ms = int(time.time() * 1000)
+                    d["_lag_ms"] = max(0, now_ms - ts) if ts else 0
+                    d["_stream"] = stream
+                    messages.append(d)
+                last_ts[stream] = head_ts
 
             if messages:
                 send_started = time.perf_counter_ns()
@@ -106,9 +123,11 @@ async def firehose(ws: WebSocket):
             # Periodically refresh stream list (new tick streams may appear)
             if time.time() - last_refresh > 30:
                 streams = await _resolve_streams(r)
+                seed_ms = int(time.time() * 1000)
                 for s in streams:
-                    if s not in indices:
-                        indices[s] = await r.llen(s)
+                    if s not in last_ts:
+                        head = await r.lindex(s, 0)
+                        last_ts[s] = _entry_ts(head) if head else seed_ms
                 last_refresh = time.time()
 
             elapsed_ns = time.perf_counter_ns() - t0

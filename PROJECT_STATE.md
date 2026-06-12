@@ -306,8 +306,8 @@ price feeds, re-polluting the honest window. New `reyog_risk` container
 read-only.
 
 **Deferred to G2 (modeling — need 24h honest data first):**
-- LiveExecutor latent WRONGTYPE bug at `live_executor.py:52` (not used in
-  production currently — no container runs arb.main).
+- ~~LiveExecutor latent WRONGTYPE bug at `live_executor.py:52`~~ **FIXED**
+  (see G1.4 bus-correctness pass below).
 - F4: `_classify_market` misclassifies 5m/15m windows as "4h".
 - F5: `_updown_probability` `samples_per_hour=3600` miscalibrated.
 - F6: resolution uses our own price feed (simulated settlement, not true
@@ -322,3 +322,42 @@ services is still pending.
 
 **Status:** F1–F3 + double-count + RiskRunner service deployed & verified
 on VPS (paper). Awaiting approval to start the ≥24h honest data window.
+
+---
+
+## G1.4 — Redis-bus correctness pass (2026-06-12)
+
+Audit found four more Stream-API-on-a-List / capped-List cursor bugs of the
+same family as G1.1's F1/F2. All are now fixed with regression tests.
+**No trading-strategy, risk-gate, or PAPER_TRADE behavior was changed** — these
+are pure message-bus correctness fixes. Mode stays PAPER.
+
+- **`arb/execution/live_executor.py`** — `_signal_consumer` used `r.xread()`
+  (Streams API) on the `arb:signals` **List** → WRONGTYPE on every poll, so
+  LiveExecutor (the `arb.main` executor) never executed a single signal.
+  Rewired to the List pattern (`latest()` + newest-ts tracking + dedupe, ignore
+  startup backlog), mirroring the engine's `emit_trades()`. Also fixed a field
+  mismatch: `_execute` read `risk_reward` but signals carry `risk_reward_ratio`.
+  *(Latent — `arb.main` isn't a production container — but it crashed the
+  documented `python -m arb.main` path on the first signal.)*
+- **`arb/dashboard/api/routes/ws.py`** — `/ws/live` hardcoded BINANCE/BYBIT tick
+  streams, which the production engine never publishes (it emits GATEIO/HTX), so
+  the live feed showed no ticks. Now resolves `arb:ticks:*` from Redis
+  dynamically (with periodic refresh) and tracks the new timestamp cursor.
+- **`arb/dashboard/api/routes/firehose.py`** + **`arb/infra/redis_bus.read_new`**
+  — both used an `llen`/index cursor. arb:* lists are capped at
+  `MAX_LIST_LENGTH` (50k); once a list saturates, `llen` stops growing while
+  items keep flowing through the head, so the cursor went ≤ 0 and the feed
+  **silently died** (~83 min for a tick stream). Switched to a monotonic
+  per-stream `ts` cursor with an O(1) `lindex 0` head-peek to skip the `lrange`
+  when nothing is new. Robust to the cap and to trimming.
+- **`arb/feeds/nautilus_redis_client.py`** — `RedisTickBridge._run` used
+  `r.xread()` on the `arb:ticks:*` **Lists** → WRONGTYPE. Rewired to the same
+  ts-cursor List poll. *(Latent — Nautilus bridge isn't in the prod stack.)*
+- **`arb/infra/redis_bus.subscribe`** — `BLPOP` on an `LPUSH` list is LIFO and
+  starves older messages (docstring even claimed "pop from tail"). Switched to
+  `BRPOP` for true FIFO. *(Unused helper today; fixed for correctness.)*
+
+**Tests:** `tests/unit/test_redis_bus_read_new.py` (cursor + saturation) and
+`tests/unit/test_live_executor_consumer.py` (paper execution, no WRONGTYPE)
+added. Full suite: **35 passed**.
