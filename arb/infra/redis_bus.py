@@ -48,14 +48,18 @@ async def subscribe(
     block_ms: int = 100,
 ) -> None:
     """
-    Polling consumer loop using BLPOP (blocking pop from right/tail).
-    Processes messages and calls handler. Runs until CancelledError.
+    Polling consumer loop using BRPOP (blocking pop from the tail).
+
+    publish() prepends with LPUSH (newest at head), so the OLDEST message sits
+    at the tail. BRPOP pops the tail → FIFO delivery order. (The old BLPOP
+    popped the head → LIFO, delivering newest-first and starving older messages
+    under load.)
     """
     r = get_redis()
     while True:
         try:
-            # Use BLPOP with timeout for blocking pop
-            result = await r.blpop([stream], timeout=block_ms / 1000)
+            # Use BRPOP with timeout for blocking pop from the tail (FIFO).
+            result = await r.brpop([stream], timeout=block_ms / 1000)
             if result:
                 _, raw = result
                 try:
@@ -83,25 +87,44 @@ async def latest(stream: str, count: int = 50) -> list[dict[str, Any]]:
     return result
 
 
-async def read_new(stream: str, last_seen_index: int = 0, count: int = 50) -> tuple[list[dict], int]:
+async def read_new(stream: str, last_seen_ts: int = 0, count: int = 50) -> tuple[list[dict], int]:
     """
-    Non-blocking read of new messages since last_seen_index.
-    Returns (messages, new_last_index).
-    For the WebSocket route — use polling at 100ms intervals.
+    Non-blocking read of messages newer than `last_seen_ts` (epoch ms cursor).
+    Returns (messages_newest_first, new_cursor_ts). For the WebSocket routes —
+    poll at ~100ms intervals; pass the returned cursor back in each call.
+
+    Why a timestamp cursor and not a list index: arb:* are CAPPED Redis Lists
+    (publish → LPUSH at head, then LTRIM to MAX_LIST_LENGTH). An index/llen
+    cursor breaks the moment a list saturates — llen stops growing while items
+    keep flowing through the head, so `total - last_seen_index` goes ≤ 0 and the
+    feed silently dies. The newest item's `ts` (always injected by publish())
+    is monotonic and survives both the cap and trimming.
     """
     r = get_redis()
-    total = await r.llen(stream)
-    if total <= last_seen_index:
-        return [], last_seen_index
+    # O(1) head peek — skip the lrange entirely when nothing is new (works even
+    # at the cap, where llen no longer changes).
+    head = await r.lindex(stream, 0)
+    if head is None:
+        return [], last_seen_ts
+    try:
+        head_ts = int(json.loads(head).get("ts", 0) or 0)
+    except Exception:
+        head_ts = 0
+    if head_ts <= last_seen_ts:
+        return [], last_seen_ts
 
-    # Read from tail (oldest at tail, newest at head)
-    # Get all items newer than last_seen_index
-    new_count = min(count, total - last_seen_index)
-    raw_list = await r.lrange(stream, 0, new_count - 1)
+    raw_list = await r.lrange(stream, 0, count - 1)  # newest-first
     result = []
+    max_ts = last_seen_ts
     for raw in raw_list:
         try:
-            result.append(json.loads(raw))
+            d = json.loads(raw)
         except Exception:
-            pass
-    return result, total
+            continue
+        ts = int(d.get("ts", 0) or 0)
+        if ts <= last_seen_ts:
+            continue
+        result.append(d)
+        if ts > max_ts:
+            max_ts = ts
+    return result, max(max_ts, head_ts)
