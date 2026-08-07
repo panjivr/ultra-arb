@@ -64,12 +64,19 @@ echo "  → Reminder: also add Ingress TCP/80 in OCI Console (VCN Security List)
 # Optional: export DOMAIN=pusatbanksoal.online before running to wire a custom
 # domain behind Cloudflare (HTTPS). Without it, the raw public IP is used.
 cd "$REPO_DIR"
-DOMAIN="${DOMAIN:-}"
+DOMAIN="${DOMAIN:-}"     # backend host, e.g. api.pusatbanksoal.online (Pola 2) or pusatbanksoal.online (Pola 1)
+FRONT="${FRONT:-}"       # Pola 2 only: the Vercel frontend origin, e.g. pusatbanksoal.online
 if [ -n "$DOMAIN" ]; then
     PUB_API="https://$DOMAIN"; PUB_WS="wss://$DOMAIN"
-    CORS="https://$DOMAIN,https://www.$DOMAIN"
     REYOG_HOST="$DOMAIN"
-    echo "  → Domain mode: $DOMAIN (point it at $PUBLIC_IP via Cloudflare — see docs/08)"
+    if [ -n "$FRONT" ]; then
+        # Backend on api.* , frontend served elsewhere (Vercel): allow the frontend origin.
+        CORS="https://$FRONT,https://www.$FRONT"
+        echo "  → Pola 2: backend $DOMAIN, CORS allows frontend https://$FRONT"
+    else
+        CORS="https://$DOMAIN,https://www.$DOMAIN"
+        echo "  → Pola 1: all-in-one at $DOMAIN (point it at $PUBLIC_IP via Cloudflare — docs/08)"
+    fi
 else
     PUB_API="http://$PUBLIC_IP"; PUB_WS="ws://$PUBLIC_IP"; CORS="*"; REYOG_HOST="$PUBLIC_IP"
 fi
