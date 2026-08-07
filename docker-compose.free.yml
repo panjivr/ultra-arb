@@ -1,0 +1,172 @@
+# REYOG CAPITAL — 100% FREE stack (Oracle Cloud "Always Free", ARM64/AMD64)
+#
+# Standalone compose — use it INSTEAD of docker-compose.yml (not layered), so
+# there are no volume/port merge surprises:
+#
+#   docker compose -f docker-compose.free.yml up -d --build
+#
+# Why a separate file (all $0, all features intact):
+#   • postgres:16-alpine instead of timescale/timescaledb — the Timescale image
+#     has NO arm64 build and won't run on Oracle Ampere A1. arb/infra/db.py
+#     already falls back to plain Postgres tables when the extension is absent,
+#     so hypertables simply become normal tables. Zero behaviour change for paper.
+#   • Plain HTTP :80 via deploy/nginx.free.conf — online with just the VM's public
+#     IP, no domain or TLS cert needed. Add HTTPS later (docs/07-deploy-oracle-gratis.md).
+#   • WS/firehose cadence lowered via env — lighter on a small free VM, still
+#     real-time feel. Everything else is identical to production.
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: reyog_redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+      --requirepass ${REDIS_PASSWORD:-reyog_redis_secret}
+    volumes:
+      - redis_data:/data
+    networks: [reyog]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-reyog_redis_secret}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  postgres:
+    image: postgres:16-alpine          # multiarch; TimescaleDB not required
+    container_name: reyog_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-arb}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-arb_secret}
+      POSTGRES_DB: ${DB_NAME:-ultra_arb}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks: [reyog]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-arb} -d ${DB_NAME:-ultra_arb}"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build: { context: ., dockerfile: Dockerfile.backend }
+    container_name: reyog_backend
+    restart: unless-stopped
+    depends_on:
+      redis: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    environment:
+      REDIS_URL: redis://:${REDIS_PASSWORD:-reyog_redis_secret}@redis:6379/0
+      DATABASE_URL: postgresql+asyncpg://${DB_USER:-arb}:${DB_PASSWORD:-arb_secret}@postgres:5432/${DB_NAME:-ultra_arb}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      PAPER_TRADE: "${PAPER_TRADE:-true}"
+      FIREHOSE_HZ_MS: "${FIREHOSE_HZ_MS:-50}"    # 20Hz — smooth + light
+      WS_INTERVAL_MS: "${WS_INTERVAL_MS:-200}"   # 5Hz
+      FINANCIAL_DATASETS_API_KEY: ${FINANCIAL_DATASETS_API_KEY:-}
+      BINANCE_API_KEY: ${BINANCE_API_KEY:-}
+      BINANCE_API_SECRET: ${BINANCE_API_SECRET:-}
+      BYBIT_API_KEY: ${BYBIT_API_KEY:-}
+      BYBIT_API_SECRET: ${BYBIT_API_SECRET:-}
+    networks: [reyog]
+
+  engine:
+    build: { context: ., dockerfile: Dockerfile.backend }
+    container_name: reyog_engine
+    restart: unless-stopped
+    depends_on:
+      redis: { condition: service_healthy }
+      backend: { condition: service_started }
+    command: ["python", "-u", "scripts/real_market_engine.py"]
+    environment:
+      REDIS_URL: redis://:${REDIS_PASSWORD:-reyog_redis_secret}@redis:6379/0
+      DATABASE_URL: postgresql+asyncpg://${DB_USER:-arb}:${DB_PASSWORD:-arb_secret}@postgres:5432/${DB_NAME:-ultra_arb}
+      PAPER_TRADE: "${PAPER_TRADE:-true}"
+      CRYPTO_STRATEGIES_ENABLED: "${CRYPTO_STRATEGIES_ENABLED:-true}"
+      POLYMARKET_ONLY_MODE: "${POLYMARKET_ONLY_MODE:-false}"
+    networks: [reyog]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import redis,sys,os; r=redis.from_url(os.environ.get('REDIS_URL','redis://redis:6379/0')); keys=r.keys('arb:ticks:*'); sys.exit(0 if len(keys)>0 else 1)\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+
+  risk:
+    build: { context: ., dockerfile: Dockerfile.backend }
+    container_name: reyog_risk
+    restart: unless-stopped
+    depends_on:
+      redis: { condition: service_healthy }
+      backend: { condition: service_started }
+    command: ["python", "-m", "scripts.risk_main"]
+    environment:
+      REDIS_URL: redis://:${REDIS_PASSWORD:-reyog_redis_secret}@redis:6379/0
+      DATABASE_URL: postgresql+asyncpg://${DB_USER:-arb}:${DB_PASSWORD:-arb_secret}@postgres:5432/${DB_NAME:-ultra_arb}
+      PAPER_TRADE: "${PAPER_TRADE:-true}"
+      RISK_HEALTH_PORT: "8001"
+    networks: [reyog]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8001/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+
+  edge_runner:
+    build: { context: ., dockerfile: Dockerfile.backend }
+    container_name: reyog_edges
+    restart: unless-stopped
+    depends_on:
+      redis: { condition: service_healthy }
+      backend: { condition: service_started }
+    command: ["python", "-u", "scripts/edge_runner.py"]
+    environment:
+      REDIS_URL: redis://:${REDIS_PASSWORD:-reyog_redis_secret}@redis:6379/0
+      DATABASE_URL: postgresql+asyncpg://${DB_USER:-arb}:${DB_PASSWORD:-arb_secret}@postgres:5432/${DB_NAME:-ultra_arb}
+    networks: [reyog]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import redis,sys,os; r=redis.from_url(os.environ.get('REDIS_URL','redis://redis:6379/0')); keys=r.keys('arb:edges:*'); sys.exit(0 if len(keys)>0 else 1)\" || exit 1"]
+      interval: 60s
+      timeout: 10s
+      start_period: 180s
+      retries: 5
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
+        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-}
+    container_name: reyog_frontend
+    restart: unless-stopped
+    depends_on: [backend]
+    networks: [reyog]
+
+  nginx:
+    image: nginx:alpine
+    container_name: reyog_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./deploy/nginx.free.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on: [backend, frontend]
+    networks: [reyog]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost/nginx-health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  redis_data:
+  pg_data:
+
+networks:
+  reyog:
+    driver: bridge

@@ -142,6 +142,15 @@ git pull && sudo docker compose up -d --build   # update
 ```
 Buka http://103.31.38.106/
 
+### GRATIS 24/7 (Oracle Cloud Always Free — Rp0, tanpa ubah kode)
+```bash
+# Di VM Oracle Always Free (Ubuntu ARM/AMD):
+git clone https://github.com/panjivr/ultra-arb.git && cd ultra-arb
+sudo bash deploy/oracle-setup.sh          # docker + firewall + .env + up
+# → http://<PUBLIC_IP>/
+```
+Panduan lengkap: `docs/07-deploy-oracle-gratis.md` · Audit biaya: `docs/06-audit-gratisan.md`
+
 ### Re-deploy dari lokal (otomatis)
 ```bash
 .venv\Scripts\python.exe scripts/auto_deploy.py 103.31.38.106 <password> reyogcapital165

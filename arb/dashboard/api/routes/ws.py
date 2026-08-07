@@ -5,12 +5,15 @@ Uses polling (read_new) since we're on Redis Lists instead of Streams.
 """
 import asyncio
 import json
+import os
 import time
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from arb.infra.redis_bus import get_redis, read_new
 
 router = APIRouter(tags=["websocket"])
-PUSH_INTERVAL = 0.1  # 100ms
+# Default 100ms cadence. On free-tier Redis set WS_INTERVAL_MS=1000 (1Hz) to
+# stay within command budgets. See docs/06-audit-gratisan.md.
+PUSH_INTERVAL = max(0.02, float(os.getenv("WS_INTERVAL_MS", "100")) / 1000.0)
 
 # Non-tick streams are fixed. Tick streams are resolved dynamically from Redis
 # so we follow whatever venues the engine actually publishes (GATEIO/HTX in

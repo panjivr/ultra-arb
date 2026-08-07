@@ -10,14 +10,18 @@ Architecture:
 """
 import asyncio
 import json
+import os
 import time
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from arb.infra.redis_bus import get_redis
 
 router = APIRouter(tags=["firehose"])
 
-# 10ms loop = 100Hz push rate
-PUSH_INTERVAL = 0.01
+# Push cadence. Default 10ms (100Hz) preserves the original full-firehose feel.
+# On command-limited free-tier Redis (e.g. Upstash), set FIREHOSE_HZ_MS=500 so
+# the poll loop runs ~2Hz instead of 100Hz — cuts Redis reads ~50x while the
+# feed still updates in real time. See docs/06-audit-gratisan.md.
+PUSH_INTERVAL = max(0.001, float(os.getenv("FIREHOSE_HZ_MS", "10")) / 1000.0)
 # Per-poll batch cap per stream — large enough to cover a burst between polls.
 MAX_BATCH = 200
 

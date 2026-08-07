@@ -141,6 +141,22 @@ Jalur C bergantung PC nyala.
 3. **Cuma buat coba/paper di PC → Jalur C.** Paling cepat, `docker compose up`
    + Cloudflare Tunnel opsional.
 
-Semua jalur = **Rp0** dan **tanpa token/LLM berbayar**. Tinggal pilih, nanti
-saya eksekusi (patch kode + panduan langkah-langkah spesifik host-nya).
+Semua jalur = **Rp0** dan **tanpa token/LLM berbayar**.
+
+---
+
+## 7. Status implementasi — Jalur A sudah SIAP PAKAI ✅
+
+Jalur A (Oracle Always Free) sudah dikerjakan penuh — tinggal jalankan:
+
+| Artefak | Fungsi |
+|---|---|
+| `docker-compose.free.yml` | Stack ARM-safe (postgres alpine, HTTP-only, cadence hemat) |
+| `deploy/nginx.free.conf` | Reverse proxy HTTP :80, tanpa perlu cert |
+| `deploy/oracle-setup.sh` | Deploy 1 perintah (docker + firewall + .env + up) |
+| `docs/07-deploy-oracle-gratis.md` | **Panduan langkah demi langkah** (daftar → VM → live) |
+| patch `firehose.py` / `ws.py` | Cadence via env (`FIREHOSE_HZ_MS`, `WS_INTERVAL_MS`) |
+
+Kode inti tak berubah; `arb/infra/db.py` memang sudah punya fallback
+TimescaleDB→Postgres, jadi ARM aman. **Mulai dari `docs/07`.**
 </content>
