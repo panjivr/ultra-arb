@@ -149,7 +149,11 @@ git clone https://github.com/panjivr/ultra-arb.git && cd ultra-arb
 sudo bash deploy/oracle-setup.sh          # docker + firewall + .env + up
 # → http://<PUBLIC_IP>/
 ```
-Panduan lengkap: `docs/07-deploy-oracle-gratis.md` · Audit biaya: `docs/06-audit-gratisan.md`
+Pakai domain sendiri (mis. `pusatbanksoal.online`) + HTTPS gratis via Cloudflare:
+```bash
+sudo DOMAIN=pusatbanksoal.online bash deploy/oracle-setup.sh
+```
+Panduan: `docs/07-deploy-oracle-gratis.md` (VM) · `docs/08-domain-gratis.md` (domain+HTTPS) · `docs/06-audit-gratisan.md` (audit biaya)
 
 ### Re-deploy dari lokal (otomatis)
 ```bash
