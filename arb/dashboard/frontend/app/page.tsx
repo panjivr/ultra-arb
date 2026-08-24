@@ -14,6 +14,8 @@ import { useEffect, useState } from "react";
 const WalletConnect = dynamic(() => import("../src/components/WalletConnect"), { ssr: false });
 const ModeToggle = dynamic(() => import("../src/components/ModeToggle"), { ssr: false });
 const LeaderCopyPanel = dynamic(() => import("../src/components/LeaderCopyPanel"), { ssr: false });
+const RobustnessMatrix = dynamic(() => import("../src/components/RobustnessMatrix"), { ssr: false });
+const AlertTicker = dynamic(() => import("../src/components/AlertTicker"), { ssr: false });
 const TickerStream = dynamic(() => import("../src/components/TickerStream"), { ssr: false });
 const StatsBar = dynamic(() => import("../src/components/StatsBar"), { ssr: false });
 const EquityChart = dynamic(() => import("../src/components/EquityChart"), { ssr: false });
@@ -56,6 +58,9 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {/* Scrolling alert ticker — real copy-trade events */}
+      <AlertTicker />
+
       {/* Live crypto ticker — context for 5m/15m/30m Polymarket bets */}
       <div className="px-4 pt-3">
         <TickerStream />
@@ -76,6 +81,9 @@ export default function Dashboard() {
             <ActivityMonitor />
           </div>
         </div>
+
+        {/* Real multi-timeframe returns heatmap (Robustness Matrix) */}
+        <RobustnessMatrix />
 
         {/* THE CORE: copy the top 1-10 Polymarket champions */}
         <LeaderCopyPanel />

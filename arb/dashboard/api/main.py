@@ -5,7 +5,7 @@ from arb.config import settings
 from arb.dashboard.api.routes import (
     pnl, signals, positions, ws, stats, markets, activity, extended_stats,
     wallet, bloomberg, latency, firehose, financial, polymarket, compounding,
-    edges, onchain, mode,
+    edges, onchain, mode, matrix,
 )
 
 @asynccontextmanager
@@ -49,6 +49,7 @@ app.include_router(compounding.router)
 app.include_router(edges.router)
 app.include_router(onchain.router)
 app.include_router(mode.router)
+app.include_router(matrix.router)
 
 
 @app.get("/health")
