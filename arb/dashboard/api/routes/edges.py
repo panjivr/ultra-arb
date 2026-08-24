@@ -68,6 +68,28 @@ async def smart_money(limit: int = 30):
             "signal_count": len(items), "wallet_count": len(wallets)}
 
 
+@router.get("/leaders")
+async def leaders():
+    """The TOP 1-10 Polymarket leaders we copy (from copy_leaders)."""
+    r = get_redis()
+    raw = await r.get("arb:edges:leaders")
+    data = {}
+    if raw:
+        try:
+            data = json.loads(raw)
+        except Exception:
+            data = {}
+    return {"leaders": data.get("leaders", []), "top_n": data.get("top_n", 10),
+            "ts": data.get("ts")}
+
+
+@router.get("/copy-trades")
+async def copy_trades(limit: int = 40):
+    """Recent trades mirrored from the leaders."""
+    items = await latest("arb:edges:copy_trades", count=limit)
+    return {"items": items, "count": len(items)}
+
+
 @router.get("/time-decay")
 async def time_decay(limit: int = 20):
     items = await latest("arb:edges:time_decay", count=limit)

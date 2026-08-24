@@ -12,6 +12,8 @@ import { useEffect, useState } from "react";
 // "This page couldn't load / must reload". Fewer panels = the page stays
 // responsive and reloads reliably. See docs/11-lean-polymarket.md.
 const WalletConnect = dynamic(() => import("../src/components/WalletConnect"), { ssr: false });
+const ModeToggle = dynamic(() => import("../src/components/ModeToggle"), { ssr: false });
+const LeaderCopyPanel = dynamic(() => import("../src/components/LeaderCopyPanel"), { ssr: false });
 const TickerStream = dynamic(() => import("../src/components/TickerStream"), { ssr: false });
 const StatsBar = dynamic(() => import("../src/components/StatsBar"), { ssr: false });
 const EquityChart = dynamic(() => import("../src/components/EquityChart"), { ssr: false });
@@ -42,8 +44,8 @@ export default function Dashboard() {
             <h1 className="text-base font-bold text-white tracking-wider">REYOG CAPITAL</h1>
             <p className="text-[10px] text-amber-500/80 uppercase tracking-widest">Polymarket Copy-Trade Terminal</p>
           </div>
-          <div className="flex gap-1.5 text-[10px]">
-            <span className="bg-yellow-900/50 text-yellow-400 px-2 py-1 rounded font-bold">PAPER</span>
+          <div className="flex gap-1.5 text-[10px] items-center">
+            <ModeToggle />
             <span className="bg-green-900/40 text-green-300 px-2 py-1 rounded font-bold">REAL DATA</span>
             <span className="bg-fuchsia-900/40 text-fuchsia-300 px-2 py-1 rounded font-bold">POLYMARKET</span>
           </div>
@@ -75,7 +77,10 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* The core: Polymarket bets + compounding projection */}
+        {/* THE CORE: copy the top 1-10 Polymarket champions */}
+        <LeaderCopyPanel />
+
+        {/* Polymarket bets + compounding projection */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
           <PolymarketPanel />
           <CompoundingTracker />

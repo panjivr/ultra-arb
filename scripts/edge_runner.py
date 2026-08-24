@@ -24,10 +24,12 @@ from arb.edges.related_markets import run_related_arb_loop
 from arb.edges.news_reaction import run_news_reaction_loop
 from arb.edges.basis_carry import run_basis_carry_loop
 from arb.edges.onchain_intel import run_onchain_intel_loop
+from arb.edges.copy_leaders import run_copy_leaders
 
 
 async def main():
-    print("[edge_runner] starting 7 edge scanners in parallel")
+    print("[edge_runner] starting edge scanners + leader copy-trade in parallel")
+    print("  • Copy-trade TOP 1-10 Polymarket leaders")
     print("  • YES/NO sum arbitrage (30s)")
     print("  • Smart money copy-trade (120s)")
     print("  • Time-decay arbitrage (30s)")
@@ -38,6 +40,7 @@ async def main():
     print()
 
     await asyncio.gather(
+        run_copy_leaders(),
         run_yesno_arb_loop(interval_s=30),
         run_smart_money_loop(interval_s=120),
         run_time_decay_loop(interval_s=30),
