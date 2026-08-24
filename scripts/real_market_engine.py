@@ -436,18 +436,49 @@ async def emit_trades():
 
 
 async def emit_funding():
-    """Publish funding rates (real values are slow-moving, sample less often)."""
+    """Publish REAL funding rates from public futures APIs (Gate.io + HTX).
+
+    No synthetic values: a fetch failure skips that symbol/venue rather than
+    fabricating a number. Funding is slow-moving, so a 5-min cadence is plenty.
+    """
     from arb.infra.redis_bus import publish
-    while True:
-        await asyncio.sleep(30)
-        for sym in SYMBOLS[:3]:  # main pairs only
-            for ex_name in EXCHANGES.keys():
-                rate = random.gauss(0.0001, 0.00008)  # typical 0.01% per 8h funding
-                await publish(f"arb:funding:{sym}:{ex_name}", {
-                    "symbol": sym, "exchange": ex_name,
-                    "rate": round(rate, 6),
-                    "ts": int(time.time() * 1000),
-                })
+    async with httpx.AsyncClient(timeout=httpx.Timeout(8, connect=4)) as client:
+        while True:
+            for sym in SYMBOLS[:3]:  # main pairs only
+                base = sym.split("/")[0]
+                # Gate.io USDT-perpetual funding
+                try:
+                    resp = await client.get(
+                        f"https://api.gateio.ws/api/v4/futures/usdt/contracts/{base}_USDT"
+                    )
+                    if resp.status_code == 200:
+                        fr = resp.json().get("funding_rate")
+                        if fr not in (None, ""):
+                            await publish(f"arb:funding:{sym}:GATEIO", {
+                                "symbol": sym, "exchange": "GATEIO",
+                                "rate": round(float(fr), 8),
+                                "ts": int(time.time() * 1000),
+                            })
+                except Exception:
+                    pass
+                # HTX linear-swap funding
+                try:
+                    resp = await client.get(
+                        "https://api.hbdm.com/linear-swap-api/v1/swap_funding_rate",
+                        params={"contract_code": f"{base}-USDT"},
+                    )
+                    if resp.status_code == 200:
+                        d = resp.json().get("data") or {}
+                        fr = d.get("funding_rate")
+                        if fr not in (None, ""):
+                            await publish(f"arb:funding:{sym}:HTX", {
+                                "symbol": sym, "exchange": "HTX",
+                                "rate": round(float(fr), 8),
+                                "ts": int(time.time() * 1000),
+                            })
+                except Exception:
+                    pass
+            await asyncio.sleep(300)
 
 
 # ─────────── POLYMARKET BETTING STRATEGY ───────────
