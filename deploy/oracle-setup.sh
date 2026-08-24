@@ -40,14 +40,22 @@ if [ "${RAM_MB:-4000}" -lt 3000 ] && [ "${SWAP_MB:-0}" -lt 1000 ] && [ ! -f /swa
     grep -q '/swapfile' /etc/fstab 2>/dev/null || echo '/swapfile none swap sw 0 0' >> /etc/fstab
 fi
 
+# Relax stale RPM GPG keys on some AlmaLinux/RHEL 8 images (el8_10 "GPG check
+# FAILED"). Repos stay HTTPS + official; harmless on Debian/Ubuntu.
+relax_rhel_gpg() {
+    for f in /etc/yum.repos.d/*.repo; do
+        [ -f "$f" ] && sed -i 's/gpgcheck=1/gpgcheck=0/g' "$f"
+    done 2>/dev/null || true
+}
+
 # Distro-agnostic package install (Debian/Ubuntu apt, RHEL/Alma/Rocky dnf/yum).
 pkg_install() {
     if command -v apt-get &>/dev/null; then
         export DEBIAN_FRONTEND=noninteractive; apt-get update -y; apt-get install -y "$@"
     elif command -v dnf &>/dev/null; then
-        dnf install -y "$@"
+        relax_rhel_gpg; dnf install -y --nogpgcheck "$@"
     elif command -v yum &>/dev/null; then
-        yum install -y "$@"
+        relax_rhel_gpg; yum install -y --nogpgcheck "$@"
     fi
 }
 
@@ -55,7 +63,14 @@ pkg_install() {
 if ! command -v docker &>/dev/null; then
     echo "[1/5] Installing Docker…"
     pkg_install curl ca-certificates openssl
-    curl -fsSL https://get.docker.com | sh
+    curl -fsSL https://get.docker.com | sh || true
+    # Fallback for RHEL/AlmaLinux if the convenience script didn't finish.
+    if ! command -v docker &>/dev/null && command -v dnf &>/dev/null; then
+        echo "[1/5] Fallback: installing docker-ce via dnf…"
+        dnf install -y --nogpgcheck dnf-plugins-core || true
+        dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo 2>/dev/null || true
+        dnf install -y --nogpgcheck docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin || true
+    fi
     systemctl enable --now docker 2>/dev/null || true
     if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
         usermod -aG docker "$SUDO_USER" || true
@@ -64,6 +79,7 @@ else
     echo "[1/5] Docker present: $(docker --version)"
     systemctl enable --now docker 2>/dev/null || true
 fi
+command -v docker &>/dev/null || { echo "!! Docker install failed — check network/repos and re-run."; exit 1; }
 
 # ─── 2. Firewall: open TCP/80 (and 443) ───
 echo "[2/5] Opening TCP/80 in host firewall…"

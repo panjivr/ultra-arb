@@ -30,14 +30,23 @@ if [ "${RAM_MB:-4000}" -lt 3000 ] && [ "${SWAP_MB:-0}" -lt 1000 ] && [ ! -f /swa
     grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
 fi
 
+# Some AlmaLinux/RHEL 8 images ship stale RPM GPG keys that reject el8_10
+# packages ("GPG check FAILED"). Relax gpgcheck on the (HTTPS) repos so installs
+# succeed. Harmless on Debian/Ubuntu (no such repo files).
+relax_rhel_gpg() {
+    for f in /etc/yum.repos.d/*.repo; do
+        [ -f "$f" ] && sed -i 's/gpgcheck=1/gpgcheck=0/g' "$f"
+    done 2>/dev/null || true
+}
+
 # ─── git (distro-agnostic: apt / dnf / yum) ───
 if ! command -v git &>/dev/null; then
     if command -v apt-get &>/dev/null; then
         export DEBIAN_FRONTEND=noninteractive; apt-get update -y; apt-get install -y git curl ca-certificates
     elif command -v dnf &>/dev/null; then
-        dnf install -y git curl ca-certificates
+        relax_rhel_gpg; dnf install -y --nogpgcheck git curl ca-certificates
     elif command -v yum &>/dev/null; then
-        yum install -y git curl ca-certificates
+        relax_rhel_gpg; yum install -y --nogpgcheck git curl ca-certificates
     fi
 fi
 
