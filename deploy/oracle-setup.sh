@@ -119,7 +119,10 @@ if [ -n "$DOMAIN" ]; then
         echo "  → Pola 1: all-in-one at $DOMAIN (point it at $PUBLIC_IP via Cloudflare — docs/08)"
     fi
 else
-    PUB_API="http://$PUBLIC_IP"; PUB_WS="ws://$PUBLIC_IP"; CORS="*"; REYOG_HOST="$PUBLIC_IP"
+    # No domain: leave frontend URLs BLANK so the browser calls same-origin
+    # (whatever host/IP you open) via nginx. Baking a specific IP breaks when
+    # the box has IPv6 + IPv4. CORS stays open.
+    PUB_API=""; PUB_WS=""; CORS="*"; REYOG_HOST="$PUBLIC_IP"
 fi
 if [ ! -f .env ]; then
     echo "[3/5] Generating .env…"
