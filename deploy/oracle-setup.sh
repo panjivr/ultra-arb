@@ -103,6 +103,12 @@ REDIS_URL=redis://:$REDIS_PW@redis:6379/0
 
 PAPER_TRADE=true
 
+# Polymarket-focused web: engine runs ONLY the Polymarket strategy (asset price
+# feed stays up; crypto spot/perp/funding trading off). Flip PAPER_TRADE=false
+# + set POLYMARKET_PRIVATE_KEY only when you deliberately go live (real USDC).
+POLYMARKET_ONLY_MODE=true
+CRYPTO_STRATEGIES_ENABLED=false
+
 # Free-tier cadence (light on a small VM; still real-time feel)
 FIREHOSE_HZ_MS=50
 WS_INTERVAL_MS=200
