@@ -30,6 +30,16 @@ echo "  Arch      : $ARCH"
 echo "  Repo      : $REPO_DIR"
 echo "════════════════════════════════════════════════════════════"
 
+# ─── 0. Swap (low-RAM boxes) — prevents build OOM ───
+RAM_MB=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}')
+SWAP_MB=$(free -m 2>/dev/null | awk '/^Swap:/{print $2}')
+if [ "${RAM_MB:-4000}" -lt 3000 ] && [ "${SWAP_MB:-0}" -lt 1000 ] && [ ! -f /swapfile ]; then
+    echo "[0/5] RAM ${RAM_MB}MB — adding 2GB swap…"
+    fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048
+    chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+    grep -q '/swapfile' /etc/fstab 2>/dev/null || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+fi
+
 # Distro-agnostic package install (Debian/Ubuntu apt, RHEL/Alma/Rocky dnf/yum).
 pkg_install() {
     if command -v apt-get &>/dev/null; then
