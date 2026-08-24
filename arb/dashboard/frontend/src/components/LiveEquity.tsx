@@ -1,0 +1,57 @@
+"use client";
+import { useEffect, useState } from "react";
+import { api } from "../lib/api";
+import AnimatedNumber from "./AnimatedNumber";
+
+interface Live {
+  realized_equity: number; unrealized_usd: number; live_equity: number;
+  start_capital: number; open_marked: number; is_real_wallet?: boolean;
+}
+
+export default function LiveEquity() {
+  const [d, setD] = useState<Live | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const j = await fetch(api("/api/equity/live")).then(r => r.json());
+        if (alive) setD(j);
+      } catch { /* ignore */ }
+    };
+    load();
+    const id = setInterval(load, 1500);
+    return () => { alive = false; clearInterval(id); };
+  }, []);
+
+  const start = d?.start_capital ?? 10000;
+  const eq = d?.live_equity ?? start;
+  const pnl = eq - start;
+  const pct = start ? (pnl / start) * 100 : 0;
+  const up = pnl >= 0;
+  const unreal = d?.unrealized_usd ?? 0;
+
+  return (
+    <div className="bg-gray-950 border-y border-gray-800 px-4 py-2 flex items-center justify-between font-mono">
+      <div className="flex items-baseline gap-3">
+        <span className="text-[10px] uppercase tracking-widest text-gray-500">Live Equity</span>
+        <span className={`text-2xl font-bold ${up ? "text-green-400" : "text-red-400"}`}>
+          $<AnimatedNumber value={eq} duration={1200} format={(n) => n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} />
+        </span>
+        <span className={`text-sm font-bold ${up ? "text-green-400" : "text-red-400"}`}>
+          {up ? "▲" : "▼"} <AnimatedNumber value={pnl} duration={1200} format={(n) => (n >= 0 ? "+" : "") + n.toFixed(2)} />
+          <span className="text-gray-500 text-xs ml-1">(<AnimatedNumber value={pct} format={(n) => (n >= 0 ? "+" : "") + n.toFixed(2)} />%)</span>
+        </span>
+      </div>
+      <div className="flex items-center gap-4 text-[11px]">
+        <span className="text-gray-500">
+          unrealized <span className={unreal >= 0 ? "text-green-400" : "text-red-400"}>
+            <AnimatedNumber value={unreal} format={(n) => (n >= 0 ? "+$" : "-$") + Math.abs(n).toFixed(2)} />
+          </span>
+          {d ? <span className="text-gray-600"> · {d.open_marked} open marked</span> : null}
+        </span>
+        <span className="text-green-400 text-[10px]">● LIVE MARK-TO-MARKET</span>
+      </div>
+    </div>
+  );
+}

@@ -15,6 +15,7 @@ const WalletConnect = dynamic(() => import("../src/components/WalletConnect"), {
 const ModeToggle = dynamic(() => import("../src/components/ModeToggle"), { ssr: false });
 const LeaderCopyPanel = dynamic(() => import("../src/components/LeaderCopyPanel"), { ssr: false });
 const RobustnessMatrix = dynamic(() => import("../src/components/RobustnessMatrix"), { ssr: false });
+const LiveEquity = dynamic(() => import("../src/components/LiveEquity"), { ssr: false });
 const AlertTicker = dynamic(() => import("../src/components/AlertTicker"), { ssr: false });
 const TickerStream = dynamic(() => import("../src/components/TickerStream"), { ssr: false });
 const StatsBar = dynamic(() => import("../src/components/StatsBar"), { ssr: false });
@@ -60,6 +61,9 @@ export default function Dashboard() {
 
       {/* Scrolling alert ticker — real copy-trade events */}
       <AlertTicker />
+
+      {/* Live equity — realized + unrealized mark-to-market, moves every ~1.5s */}
+      <LiveEquity />
 
       {/* Live crypto ticker — context for 5m/15m/30m Polymarket bets */}
       <div className="px-4 pt-3">
