@@ -30,10 +30,15 @@ if [ "${RAM_MB:-4000}" -lt 3000 ] && [ "${SWAP_MB:-0}" -lt 1000 ] && [ ! -f /swa
     grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
 fi
 
-# ─── git ───
+# ─── git (distro-agnostic: apt / dnf / yum) ───
 if ! command -v git &>/dev/null; then
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update -y && apt-get install -y git curl ca-certificates
+    if command -v apt-get &>/dev/null; then
+        export DEBIAN_FRONTEND=noninteractive; apt-get update -y; apt-get install -y git curl ca-certificates
+    elif command -v dnf &>/dev/null; then
+        dnf install -y git curl ca-certificates
+    elif command -v yum &>/dev/null; then
+        yum install -y git curl ca-certificates
+    fi
 fi
 
 # ─── clone / update ───

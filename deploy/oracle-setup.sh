@@ -30,35 +30,50 @@ echo "  Arch      : $ARCH"
 echo "  Repo      : $REPO_DIR"
 echo "════════════════════════════════════════════════════════════"
 
+# Distro-agnostic package install (Debian/Ubuntu apt, RHEL/Alma/Rocky dnf/yum).
+pkg_install() {
+    if command -v apt-get &>/dev/null; then
+        export DEBIAN_FRONTEND=noninteractive; apt-get update -y; apt-get install -y "$@"
+    elif command -v dnf &>/dev/null; then
+        dnf install -y "$@"
+    elif command -v yum &>/dev/null; then
+        yum install -y "$@"
+    fi
+}
+
 # ─── 1. Docker ───
 if ! command -v docker &>/dev/null; then
     echo "[1/5] Installing Docker…"
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update -y
-    apt-get install -y curl ca-certificates iptables
+    pkg_install curl ca-certificates openssl
     curl -fsSL https://get.docker.com | sh
+    systemctl enable --now docker 2>/dev/null || true
     if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
         usermod -aG docker "$SUDO_USER" || true
     fi
 else
     echo "[1/5] Docker present: $(docker --version)"
+    systemctl enable --now docker 2>/dev/null || true
 fi
 
-# ─── 2. Firewall: open TCP/80 in the VM's iptables ───
-# Oracle Ubuntu images ship an INPUT chain that REJECTs everything after SSH.
-# Insert an ACCEPT for :80 BEFORE that reject rule, then persist.
-echo "[2/5] Opening TCP/80 in VM firewall…"
-if ! iptables -C INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null; then
-    iptables -I INPUT 6 -p tcp --dport 80 -j ACCEPT 2>/dev/null \
-        || iptables -I INPUT -p tcp --dport 80 -j ACCEPT
+# ─── 2. Firewall: open TCP/80 (and 443) ───
+echo "[2/5] Opening TCP/80 in host firewall…"
+if command -v firewall-cmd &>/dev/null && systemctl is-active --quiet firewalld; then
+    firewall-cmd --permanent --add-port=80/tcp  >/dev/null 2>&1 || true
+    firewall-cmd --permanent --add-port=443/tcp >/dev/null 2>&1 || true
+    firewall-cmd --reload >/dev/null 2>&1 || true
+    echo "  → firewalld: opened 80/443"
+elif command -v ufw &>/dev/null; then
+    ufw allow 80/tcp  >/dev/null 2>&1 || true
+    ufw allow 443/tcp >/dev/null 2>&1 || true
+    echo "  → ufw: opened 80/443"
+elif command -v iptables &>/dev/null; then
+    iptables -C INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport 80 -j ACCEPT
+    iptables -C INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport 443 -j ACCEPT
+    command -v netfilter-persistent &>/dev/null && netfilter-persistent save 2>/dev/null || true
+    echo "  → iptables: opened 80/443"
+else
+    echo "  → no firewall tool found — assuming ports already open."
 fi
-# Persist across reboots (best-effort — depends on distro tooling).
-if command -v netfilter-persistent &>/dev/null; then
-    netfilter-persistent save || true
-elif command -v iptables-save &>/dev/null; then
-    mkdir -p /etc/iptables && iptables-save > /etc/iptables/rules.v4 || true
-fi
-echo "  → Reminder: also add Ingress TCP/80 in OCI Console (VCN Security List)."
 
 # ─── 3. .env ───
 # Optional: export DOMAIN=pusatbanksoal.online before running to wire a custom
