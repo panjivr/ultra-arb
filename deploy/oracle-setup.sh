@@ -20,7 +20,7 @@
 set -euo pipefail
 
 REPO_DIR="${REPO_DIR:-$(pwd)}"
-PUBLIC_IP="${PUBLIC_IP:-$(curl -s ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')}"
+PUBLIC_IP="${PUBLIC_IP:-$(curl -4 -s ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')}"
 ARCH="$(uname -m)"
 
 echo "════════════════════════════════════════════════════════════"
