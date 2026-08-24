@@ -76,16 +76,34 @@ EOF
 cloudflared tunnel route dns "$TUNNEL_NAME" "$DOMAIN"      || true
 cloudflared tunnel route dns "$TUNNEL_NAME" "www.$DOMAIN"  || true
 
-# ─── 5. Run (install as a service if possible) ───
+# ─── 5. Run (systemd service if possible, else background) ───
 echo "[5/5] Starting tunnel…"
+CF_BIN="$(command -v cloudflared)"
+CFG="$HOME/.cloudflared/config.yml"
 if command -v systemctl &>/dev/null && [ "$(uname -s)" = "Linux" ]; then
-    sudo cloudflared --config "$HOME/.cloudflared/config.yml" service install || true
-    sudo systemctl enable --now cloudflared 2>/dev/null || true
+    cat > /etc/systemd/system/cloudflared.service <<EOF
+[Unit]
+Description=cloudflared tunnel ($TUNNEL_NAME)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=$CF_BIN tunnel --config $CFG run
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable --now cloudflared 2>/dev/null || true
     echo "  Installed as systemd service (auto-starts on boot)."
-    echo "  Logs: sudo journalctl -u cloudflared -f"
+    echo "  Logs: journalctl -u cloudflared -f"
 else
-    echo "  Run in a persistent window (keep it open):"
-    echo "    cloudflared tunnel --config \$HOME/.cloudflared/config.yml run $TUNNEL_NAME"
+    pkill -f "cloudflared tunnel .* run" 2>/dev/null || true
+    nohup "$CF_BIN" tunnel --config "$CFG" run > /tmp/tunnel.log 2>&1 &
+    echo "  Started in background (nohup). Logs: tail -f /tmp/tunnel.log"
 fi
 
 echo ""
