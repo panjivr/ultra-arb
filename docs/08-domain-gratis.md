@@ -116,6 +116,34 @@ Env sudah disiapkan di `arb/dashboard/frontend/.env.production.example`.
 
 ---
 
+## Pola 3 — TANPA cloud: PC sendiri + Cloudflare Tunnel  *(kalau punya mesin nyala 24/7)*
+
+Kalau Anda punya PC/laptop/mini-PC yang bisa nyala terus, Anda **tak butuh VM
+cloud sama sekali**. Cloudflare Tunnel (gratis) menyambung mesin Anda ke domain.
+
+```
+Browser ─HTTPS─> Cloudflare ─Tunnel(terenkripsi)─> PC Anda (docker nginx:80) ─> REYOG
+```
+
+### Langkah
+1. Jalankan stack di PC Anda:
+   ```bash
+   docker compose -f docker-compose.free.yml up -d --build
+   ```
+2. Sambungkan tunnel (script otomatis: install cloudflared → login → buat tunnel
+   → route DNS → jalan sebagai service):
+   ```bash
+   DOMAIN=pusatbanksoal.online bash deploy/cloudflare-tunnel.sh
+   ```
+   Satu langkah butuh Anda: browser login saat `cloudflared tunnel login`
+   (pilih zona `pusatbanksoal.online`).
+3. Buka `https://pusatbanksoal.online`.
+
+> **Tunnel tidak perlu buka port** dan tidak butuh IP publik — aman untuk rumah.
+> **Untuk LIVE, mesin harus nyala 24/7.** Laptop yang sleep = bot berhenti.
+> Cocok: mini-PC / PC lama colok terus / Raspberry Pi 4 (ARM, pakai
+> `docker-compose.free.yml` yang memang ARM-safe).
+
 ## Mana yang dipilih?
 
 - **Cepat & satu tempat → Pola 1.** Semua di Oracle, domain langsung nyala HTTPS.
