@@ -5,7 +5,7 @@ VolatilityBreaker: halts if 5-min realized vol > vol_multiplier * 30d avg.
 """
 import asyncio
 import time
-import numpy as np
+import statistics
 from collections import deque
 from arb.infra.redis_bus import publish
 from arb.config import settings
@@ -89,8 +89,13 @@ class VolatilityBreaker:
     async def check(self) -> bool:
         if len(self._short) < 10 or len(self._long) < 30:
             return False
-        short_vol = float(np.std(self._short, ddof=1))
-        long_vol = float(np.std(self._long, ddof=1)) or 1e-9
+        # Sample standard deviation (ddof=1) — pure-Python so the risk service
+        # carries NO numpy dependency. numpy 2.4.x wheels are built for the
+        # x86-64-v2 baseline and crash `import numpy` on older CPUs (the VPS
+        # host), which is exactly what killed the reyog_risk container. The
+        # guards above guarantee >= 2 samples, so stdev() never raises.
+        short_vol = statistics.stdev(self._short)
+        long_vol = statistics.stdev(self._long) or 1e-9
 
         if short_vol > self._mult * long_vol:
             await self._halt(short_vol, long_vol)

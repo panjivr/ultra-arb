@@ -1,6 +1,7 @@
 "use client";
 import dynamic from "next/dynamic";
 import { useEffect, useState } from "react";
+import ErrorBoundary from "../src/components/ErrorBoundary";
 
 // LEAN Polymarket-focused dashboard.
 // Only fast, Redis/DB-backed panels relevant to Polymarket copy-trading are
@@ -11,20 +12,34 @@ import { useEffect, useState } from "react";
 // browser's per-host connection limit, which is what caused the intermittent
 // "This page couldn't load / must reload". Fewer panels = the page stays
 // responsive and reloads reliably. See docs/11-lean-polymarket.md.
-const WalletConnect = dynamic(() => import("../src/components/WalletConnect"), { ssr: false });
-const ModeToggle = dynamic(() => import("../src/components/ModeToggle"), { ssr: false });
-const LeaderCopyPanel = dynamic(() => import("../src/components/LeaderCopyPanel"), { ssr: false });
-const RobustnessMatrix = dynamic(() => import("../src/components/RobustnessMatrix"), { ssr: false });
-const LiveEquity = dynamic(() => import("../src/components/LiveEquity"), { ssr: false });
-const AlertTicker = dynamic(() => import("../src/components/AlertTicker"), { ssr: false });
-const TickerStream = dynamic(() => import("../src/components/TickerStream"), { ssr: false });
-const StatsBar = dynamic(() => import("../src/components/StatsBar"), { ssr: false });
-const EquityChart = dynamic(() => import("../src/components/EquityChart"), { ssr: false });
-const ActivityMonitor = dynamic(() => import("../src/components/ActivityMonitor"), { ssr: false });
-const PolymarketPanel = dynamic(() => import("../src/components/PolymarketPanel"), { ssr: false });
-const CompoundingTracker = dynamic(() => import("../src/components/CompoundingTracker"), { ssr: false });
-const EdgeRadar = dynamic(() => import("../src/components/EdgeRadar"), { ssr: false });
-const OnChainIntel = dynamic(() => import("../src/components/OnChainIntel"), { ssr: false });
+//
+// safeDynamic additionally wraps each panel in its own error boundary so a
+// single crashing panel (e.g. a missing field from a degraded upstream) can
+// never blank the whole dashboard.
+function safeDynamic(loader: () => Promise<{ default: React.ComponentType<Record<string, unknown>> }>) {
+  const C = dynamic(loader, { ssr: false });
+  const Wrapped = (props: Record<string, unknown>) => (
+    <ErrorBoundary>
+      <C {...props} />
+    </ErrorBoundary>
+  );
+  return Wrapped;
+}
+
+const WalletConnect = safeDynamic(() => import("../src/components/WalletConnect"));
+const ModeToggle = safeDynamic(() => import("../src/components/ModeToggle"));
+const LeaderCopyPanel = safeDynamic(() => import("../src/components/LeaderCopyPanel"));
+const RobustnessMatrix = safeDynamic(() => import("../src/components/RobustnessMatrix"));
+const LiveEquity = safeDynamic(() => import("../src/components/LiveEquity"));
+const AlertTicker = safeDynamic(() => import("../src/components/AlertTicker"));
+const TickerStream = safeDynamic(() => import("../src/components/TickerStream"));
+const StatsBar = safeDynamic(() => import("../src/components/StatsBar"));
+const EquityChart = safeDynamic(() => import("../src/components/EquityChart"));
+const ActivityMonitor = safeDynamic(() => import("../src/components/ActivityMonitor"));
+const PolymarketPanel = safeDynamic(() => import("../src/components/PolymarketPanel"));
+const CompoundingTracker = safeDynamic(() => import("../src/components/CompoundingTracker"));
+const EdgeRadar = safeDynamic(() => import("../src/components/EdgeRadar"));
+const OnChainIntel = safeDynamic(() => import("../src/components/OnChainIntel"));
 
 function Clock() {
   const [t, setT] = useState<string>("");

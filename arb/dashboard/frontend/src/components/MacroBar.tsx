@@ -33,9 +33,12 @@ export default function MacroBar() {
           fetch(api("/api/bloomberg/fear-greed")),
           fetch(api("/api/bloomberg/global")),
         ]);
-        if (r1.ok) setMacro((await r1.json()).indicators || []);
-        if (r2.ok) setFg(await r2.json());
-        if (r3.ok) setGlob(await r3.json());
+        // These upstreams (CoinGecko / fear-greed) can return a degraded
+        // {"error": ...} body with a 200. Only accept a payload that actually
+        // has the numeric fields we render, else keep the empty/loading state.
+        if (r1.ok) { const j = await r1.json(); setMacro(Array.isArray(j?.indicators) ? j.indicators : []); }
+        if (r2.ok) { const j = await r2.json(); setFg(j && typeof j.value === "number" ? j : null); }
+        if (r3.ok) { const j = await r3.json(); setGlob(j && typeof j.total_market_cap_usd === "number" ? j : null); }
       } catch {}
     };
     load();
