@@ -17,7 +17,7 @@ interface Bet {
   stake_usd: number; entry_price: number;
   implied_prob: number; our_prob: number;
   edge_bps: number; expected_value_usd: number;
-  hours_to_resolve: number; status: string;
+  hours_to_resolve: number | null; status: string;
   payout_usd?: number;
   btc_at_resolve?: number; in_range?: boolean;
   end_date: string;
@@ -134,7 +134,15 @@ export default function PolymarketPanel() {
                     </div>
                     {b.status === "open" && (
                       <div className="text-[9px] text-gray-500 mt-1">
-                        resolves in {b.hours_to_resolve.toFixed(1)}h · our prob {(b.our_prob * 100).toFixed(1)}% vs market {(b.implied_prob * 100).toFixed(1)}%
+                        {(() => {
+                          // hours_to_resolve is null for most engine bets — fall
+                          // back to end_date so this never crashes the render.
+                          const h = b.hours_to_resolve ??
+                            (b.end_date ? (new Date(b.end_date).getTime() - Date.now()) / 3_600_000 : null);
+                          return h != null && isFinite(h) && h > 0
+                            ? `resolves in ${h.toFixed(1)}h · ` : "";
+                        })()}
+                        our prob {(b.our_prob * 100).toFixed(1)}% vs market {(b.implied_prob * 100).toFixed(1)}%
                       </div>
                     )}
                     {b.status === "won" && b.payout_usd && (

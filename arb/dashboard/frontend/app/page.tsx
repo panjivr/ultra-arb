@@ -1,35 +1,49 @@
 "use client";
 import dynamic from "next/dynamic";
 import { useEffect, useState } from "react";
+import ErrorBoundary from "../src/components/ErrorBoundary";
 
-const StatsBar = dynamic(() => import("../src/components/StatsBar"), { ssr: false });
-const WalletConnect = dynamic(() => import("../src/components/WalletConnect"), { ssr: false });
-const EquityChart = dynamic(() => import("../src/components/EquityChart"), { ssr: false });
-const StrategyPerformance = dynamic(() => import("../src/components/StrategyPerformance"), { ssr: false });
-const PositionsTable = dynamic(() => import("../src/components/PositionsTable"), { ssr: false });
-const DetailedSignals = dynamic(() => import("../src/components/DetailedSignals"), { ssr: false });
-const ModelStatus = dynamic(() => import("../src/components/ModelStatus"), { ssr: false });
-const RiskPanel = dynamic(() => import("../src/components/RiskPanel"), { ssr: false });
-const SpreadsMonitor = dynamic(() => import("../src/components/SpreadsMonitor"), { ssr: false });
-const FundingRates = dynamic(() => import("../src/components/FundingRates"), { ssr: false });
-const ActivityMonitor = dynamic(() => import("../src/components/ActivityMonitor"), { ssr: false });
-const ExtendedStats = dynamic(() => import("../src/components/ExtendedStats"), { ssr: false });
-const HourlyHeatmap = dynamic(() => import("../src/components/HourlyHeatmap"), { ssr: false });
-const CorrelationMatrix = dynamic(() => import("../src/components/CorrelationMatrix"), { ssr: false });
-const EventLog = dynamic(() => import("../src/components/EventLog"), { ssr: false });
-const TickerStream = dynamic(() => import("../src/components/TickerStream"), { ssr: false });
+// Wrap every panel in its own error boundary so a single crashing panel
+// (e.g. a missing field from a degraded upstream API) never blanks the whole
+// dashboard. Client-only (ssr:false) to match the original dynamic imports.
+function safeDynamic(loader: () => Promise<{ default: React.ComponentType<Record<string, unknown>> }>) {
+  const C = dynamic(loader, { ssr: false });
+  const Wrapped = (props: Record<string, unknown>) => (
+    <ErrorBoundary>
+      <C {...props} />
+    </ErrorBoundary>
+  );
+  return Wrapped;
+}
+
+const StatsBar = safeDynamic(() => import("../src/components/StatsBar"));
+const WalletConnect = safeDynamic(() => import("../src/components/WalletConnect"));
+const EquityChart = safeDynamic(() => import("../src/components/EquityChart"));
+const StrategyPerformance = safeDynamic(() => import("../src/components/StrategyPerformance"));
+const PositionsTable = safeDynamic(() => import("../src/components/PositionsTable"));
+const DetailedSignals = safeDynamic(() => import("../src/components/DetailedSignals"));
+const ModelStatus = safeDynamic(() => import("../src/components/ModelStatus"));
+const RiskPanel = safeDynamic(() => import("../src/components/RiskPanel"));
+const SpreadsMonitor = safeDynamic(() => import("../src/components/SpreadsMonitor"));
+const FundingRates = safeDynamic(() => import("../src/components/FundingRates"));
+const ActivityMonitor = safeDynamic(() => import("../src/components/ActivityMonitor"));
+const ExtendedStats = safeDynamic(() => import("../src/components/ExtendedStats"));
+const HourlyHeatmap = safeDynamic(() => import("../src/components/HourlyHeatmap"));
+const CorrelationMatrix = safeDynamic(() => import("../src/components/CorrelationMatrix"));
+const EventLog = safeDynamic(() => import("../src/components/EventLog"));
+const TickerStream = safeDynamic(() => import("../src/components/TickerStream"));
 // REYOG CAPITAL — Bloomberg-style market intelligence
-const NewsTicker = dynamic(() => import("../src/components/NewsTicker"), { ssr: false });
-const MacroBar = dynamic(() => import("../src/components/MacroBar"), { ssr: false });
-const EconomicCalendar = dynamic(() => import("../src/components/EconomicCalendar"), { ssr: false });
-const LatencyMonitor = dynamic(() => import("../src/components/LatencyMonitor"), { ssr: false });
-const DerivativesPanel = dynamic(() => import("../src/components/DerivativesPanel"), { ssr: false });
-const TrendingCoins = dynamic(() => import("../src/components/TrendingCoins"), { ssr: false });
-const EquityWatchlist = dynamic(() => import("../src/components/EquityWatchlist"), { ssr: false });
-const PolymarketPanel = dynamic(() => import("../src/components/PolymarketPanel"), { ssr: false });
-const CompoundingTracker = dynamic(() => import("../src/components/CompoundingTracker"), { ssr: false });
-const EdgeRadar = dynamic(() => import("../src/components/EdgeRadar"), { ssr: false });
-const OnChainIntel = dynamic(() => import("../src/components/OnChainIntel"), { ssr: false });
+const NewsTicker = safeDynamic(() => import("../src/components/NewsTicker"));
+const MacroBar = safeDynamic(() => import("../src/components/MacroBar"));
+const EconomicCalendar = safeDynamic(() => import("../src/components/EconomicCalendar"));
+const LatencyMonitor = safeDynamic(() => import("../src/components/LatencyMonitor"));
+const DerivativesPanel = safeDynamic(() => import("../src/components/DerivativesPanel"));
+const TrendingCoins = safeDynamic(() => import("../src/components/TrendingCoins"));
+const EquityWatchlist = safeDynamic(() => import("../src/components/EquityWatchlist"));
+const PolymarketPanel = safeDynamic(() => import("../src/components/PolymarketPanel"));
+const CompoundingTracker = safeDynamic(() => import("../src/components/CompoundingTracker"));
+const EdgeRadar = safeDynamic(() => import("../src/components/EdgeRadar"));
+const OnChainIntel = safeDynamic(() => import("../src/components/OnChainIntel"));
 
 function Clock() {
   const [t, setT] = useState<string>("");

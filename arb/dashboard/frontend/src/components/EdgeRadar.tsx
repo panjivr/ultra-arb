@@ -156,8 +156,8 @@ export default function EdgeRadar() {
             </div>
             <div className="text-[10px] text-cyan-200 mt-0.5 line-clamp-1">{e.description}</div>
             <div className="flex items-center gap-2 mt-1 text-[9px]">
-              <span className={`px-1 rounded ${e.strategy.startsWith("SHORT") ? "bg-red-900 text-red-200" : "bg-green-900 text-green-200"}`}>
-                {e.strategy}
+              <span className={`px-1 rounded ${e.strategy?.startsWith("SHORT") ? "bg-red-900 text-red-200" : "bg-green-900 text-green-200"}`}>
+                {e.strategy ?? "—"}
               </span>
               <span className="text-gray-400">funding {fmt(e.funding_rate_pct, 4)}%</span>
               <span className="text-gray-500">basis {fmt(e.basis_bps, 1)} bps</span>
