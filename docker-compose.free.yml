@@ -134,6 +134,39 @@ services:
       start_period: 180s
       retries: 5
 
+  # AUTONOMOUS LIVE EXECUTOR — places REAL Polymarket orders from signals.
+  # OFF by default (profile "live"): the container does not even exist unless
+  # you explicitly opt in with:  docker compose --profile live up -d live_executor
+  # Even then it stays in STANDBY (places nothing) until every runtime gate is
+  # set: PAPER_TRADE=false, POLYMARKET_PRIVATE_KEY + POLY_WALLET_ADDRESS,
+  # arb:mode=real, and an explicit `arm` (auto-expiring). See docs/12-live-otonom.md.
+  live_executor:
+    build: { context: ., dockerfile: Dockerfile.backend }
+    container_name: reyog_live_executor
+    restart: unless-stopped
+    profiles: ["live"]
+    depends_on:
+      redis: { condition: service_healthy }
+      backend: { condition: service_started }
+    command: ["python", "-u", "scripts/live_autonomous_executor.py", "run"]
+    environment:
+      REDIS_URL: redis://:${REDIS_PASSWORD:-reyog_redis_secret}@redis:6379/0
+      LIVE_SAFETY_REDIS_URL: redis://:${REDIS_PASSWORD:-reyog_redis_secret}@redis:6379/0
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-reyog_redis_secret}
+      # Live gate — stays simulated until BOTH of these are set on the server:
+      PAPER_TRADE: "${PAPER_TRADE:-true}"
+      POLYMARKET_PRIVATE_KEY: ${POLYMARKET_PRIVATE_KEY:-}
+      POLY_PRIVATE_KEY: ${POLYMARKET_PRIVATE_KEY:-}
+      POLY_WALLET_ADDRESS: ${POLY_WALLET_ADDRESS:-}
+      POLY_HOST: ${POLY_HOST:-https://clob.polymarket.com}
+      POLY_CHAIN_ID: ${POLY_CHAIN_ID:-137}
+      # Conservative caps — overridable, but code enforces hard ceilings on top.
+      LIVE_TOTAL_CAP_USD: ${LIVE_TOTAL_CAP_USD:-25}
+      LIVE_MAX_OPEN: ${LIVE_MAX_OPEN:-5}
+      LIVE_MIN_GAP_SEC: ${LIVE_MIN_GAP_SEC:-30}
+      LIVE_MIN_EDGE_BPS: ${LIVE_MIN_EDGE_BPS:-500}
+    networks: [reyog]
+
   frontend:
     build:
       context: .

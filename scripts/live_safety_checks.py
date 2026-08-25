@@ -16,6 +16,12 @@ REDIS_CONTAINER = os.environ.get("REDIS_CONTAINER", "reyog_redis")
 # Optional full redis-cli argv prefix override (tests / non-docker hosts), e.g.
 #   REDIS_CLI_CMD="redis-cli -p 6379"
 _REDIS_CLI_OVERRIDE = os.environ.get("REDIS_CLI_CMD", "").strip()
+# When set, talk to Redis directly with redis-py instead of shelling out to
+# redis-cli. Required when this module runs INSIDE a container (the autonomous
+# executor), where `docker exec` is not available. e.g.
+#   LIVE_SAFETY_REDIS_URL="redis://:pw@redis:6379/0"
+_REDIS_URL = os.environ.get("LIVE_SAFETY_REDIS_URL", "").strip()
+_py_client = None
 
 DAILY_LIMIT_USD = 5.0    # max total spend per calendar day
 MAX_BET_USD = 2.0        # max single bet size
@@ -36,7 +42,22 @@ def _rcli(*args: str) -> str:
     the daily-spend INCRBYFLOAT, letting the daily cap be bypassed — nor inject a
     shell command. The auth token goes through REDISCLI_AUTH env, not the argv, so
     it never appears in the process list.
+
+    When LIVE_SAFETY_REDIS_URL is set (in-container), redis-py is used directly,
+    which is safe from quoting/injection by construction.
     """
+    if _REDIS_URL:
+        global _py_client
+        try:
+            if _py_client is None:
+                import redis as _redis
+                _py_client = _redis.from_url(_REDIS_URL, decode_responses=True)
+            res = _py_client.execute_command(*args)
+            if res is None:
+                return ""
+            return res if isinstance(res, str) else str(res)
+        except Exception as e:
+            return f"__ERR__ {e}"
     if _REDIS_CLI_OVERRIDE:
         argv = shlex.split(_REDIS_CLI_OVERRIDE) + list(args)
     else:

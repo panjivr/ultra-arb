@@ -18,11 +18,17 @@ Redis keys used:
   arb:live:daily_loss:{date}   — float, cumulative daily loss
 """
 import os
+import shlex
 import subprocess
 import sys
 from datetime import datetime, timezone
 
 REDIS_PW = os.environ.get("REDIS_PASSWORD", "reyog_redis_secret")
+REDIS_CONTAINER = os.environ.get("REDIS_CONTAINER", "reyog_redis")
+_REDIS_CLI_OVERRIDE = os.environ.get("REDIS_CLI_CMD", "").strip()
+# In-container direct redis-py backend (see live_safety_checks for rationale).
+_REDIS_URL = os.environ.get("LIVE_SAFETY_REDIS_URL", "").strip()
+_py_client = None
 
 LIVE_HALT_KEY = "arb:live:halted"
 CONSECUTIVE_LOSS_KEY = "arb:live:consecutive_losses"
@@ -33,10 +39,33 @@ MAX_CONSECUTIVE_LOSSES = 3
 MIN_WALLET_BALANCE_USD = 1.0
 
 
-def _rcli(args: str) -> str:
-    cmd = f"docker exec reyog_redis redis-cli -a {REDIS_PW} --no-auth-warning {args}"
+def _rcli(*args: str) -> str:
+    """Run one redis command with each arg as a separate element (no shell).
+
+    A halt reason can carry market-derived text with quotes/semicolons; passing
+    it verbatim as one argv element (or via redis-py) means it can never break
+    quoting or inject a shell command the way the old f-string form could.
+    """
+    if _REDIS_URL:
+        global _py_client
+        try:
+            if _py_client is None:
+                import redis as _redis
+                _py_client = _redis.from_url(_REDIS_URL, decode_responses=True)
+            res = _py_client.execute_command(*args)
+            if res is None:
+                return ""
+            return res if isinstance(res, str) else str(res)
+        except Exception as e:
+            return f"__ERR__ {e}"
+    if _REDIS_CLI_OVERRIDE:
+        argv = shlex.split(_REDIS_CLI_OVERRIDE) + list(args)
+    else:
+        argv = ["docker", "exec", "-e", "REDISCLI_AUTH", REDIS_CONTAINER,
+                "redis-cli", "--no-auth-warning", *args]
+    env = {**os.environ, "REDISCLI_AUTH": REDIS_PW}
     try:
-        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=5, env=env)
         return (r.stdout or "").strip()
     except Exception as e:
         return f"__ERR__ {e}"
@@ -50,12 +79,12 @@ def _today() -> str:
 
 
 def is_halted() -> bool:
-    val = _rcli(f"GET {LIVE_HALT_KEY}")
+    val = _rcli("GET", LIVE_HALT_KEY)
     return bool(val and val not in ("", "(nil)", "__ERR__") and val != "0")
 
 
 def get_halt_reason() -> str | None:
-    val = _rcli(f"GET {LIVE_HALT_KEY}")
+    val = _rcli("GET", LIVE_HALT_KEY)
     if val and val not in ("", "(nil)", "__ERR__", "0"):
         return val
     return None
@@ -65,13 +94,13 @@ def get_halt_reason() -> str | None:
 
 
 def set_halt(reason: str = "manual") -> None:
-    _rcli(f"SET {LIVE_HALT_KEY} '{reason}'")
+    _rcli("SET", LIVE_HALT_KEY, reason)
     print(f"[kill-switch] 🔴 HALTED: {reason}")
 
 
 def clear_halt() -> None:
-    _rcli(f"DEL {LIVE_HALT_KEY}")
-    _rcli(f"DEL {CONSECUTIVE_LOSS_KEY}")
+    _rcli("DEL", LIVE_HALT_KEY)
+    _rcli("DEL", CONSECUTIVE_LOSS_KEY)
     print("[kill-switch] ✅ Kill-switch cleared. Ready for trading.")
 
 
@@ -86,8 +115,8 @@ def record_loss(amount_usd: float) -> dict:
     today = _today()
 
     # Increment consecutive losses
-    losses = _rcli(f"INCR {CONSECUTIVE_LOSS_KEY}")
-    _rcli(f"EXPIRE {CONSECUTIVE_LOSS_KEY} 86400")
+    losses = _rcli("INCR", CONSECUTIVE_LOSS_KEY)
+    _rcli("EXPIRE", CONSECUTIVE_LOSS_KEY, "86400")
     try:
         losses = int(losses)
     except ValueError:
@@ -95,8 +124,8 @@ def record_loss(amount_usd: float) -> dict:
 
     # Increment daily loss
     daily_key = DAILY_LOSS_KEY_PREFIX + today
-    daily_loss = _rcli(f"INCRBYFLOAT {daily_key} {amount_usd}")
-    _rcli(f"EXPIRE {daily_key} 172800")
+    daily_loss = _rcli("INCRBYFLOAT", daily_key, str(amount_usd))
+    _rcli("EXPIRE", daily_key, "172800")
     try:
         daily_loss = float(daily_loss)
     except ValueError:
@@ -123,7 +152,7 @@ def record_loss(amount_usd: float) -> dict:
 
 def record_win() -> None:
     """Call after a bet resolves as a win — resets consecutive loss counter."""
-    _rcli(f"DEL {CONSECUTIVE_LOSS_KEY}")
+    _rcli("DEL", CONSECUTIVE_LOSS_KEY)
     print("[kill-switch] Win recorded — consecutive loss counter reset.")
 
 
@@ -142,8 +171,8 @@ def check_balance_halt(balance_usdc: float) -> bool:
 
 def _print_status() -> None:
     reason = get_halt_reason()
-    losses_raw = _rcli(f"GET {CONSECUTIVE_LOSS_KEY}")
-    daily_raw = _rcli(f"GET {DAILY_LOSS_KEY_PREFIX + _today()}")
+    losses_raw = _rcli("GET", CONSECUTIVE_LOSS_KEY)
+    daily_raw = _rcli("GET", DAILY_LOSS_KEY_PREFIX + _today())
 
     print("=" * 48)
     print("  Live Kill-Switch Status")
