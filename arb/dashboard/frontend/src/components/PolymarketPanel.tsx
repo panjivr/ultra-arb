@@ -14,10 +14,10 @@ interface Market {
 interface Bet {
   id: string; ts: number;
   question: string; side: string;
-  stake_usd: number; entry_price: number;
-  implied_prob: number; our_prob: number;
-  edge_bps: number; expected_value_usd: number;
-  hours_to_resolve: number; status: string;
+  stake_usd?: number; entry_price?: number;
+  implied_prob?: number; our_prob?: number;
+  edge_bps?: number; expected_value_usd?: number;
+  hours_to_resolve?: number | null; status: string;
   payout_usd?: number;
   btc_at_resolve?: number; in_range?: boolean;
   end_date: string;
@@ -122,15 +122,17 @@ export default function PolymarketPanel() {
                       <span className={`px-1.5 py-0.5 rounded font-bold ${
                         b.side === "Yes" ? "bg-green-900/60 text-green-300" : "bg-red-900/60 text-red-300"
                       }`}>{b.side}</span>
-                      <span className="text-purple-300 font-mono">${b.stake_usd.toFixed(2)}</span>
+                      <span className="text-purple-300 font-mono">${(b.stake_usd ?? 0).toFixed(2)}</span>
                       <span className="text-gray-500">@</span>
-                      <span className="text-blue-300 font-mono">{(b.entry_price * 100).toFixed(1)}¢</span>
+                      <span className="text-blue-300 font-mono">{((b.entry_price ?? 0) * 100).toFixed(1)}¢</span>
                       <span className="text-gray-600">·</span>
-                      <span className={`font-mono ${b.edge_bps >= 0 ? "text-green-400" : "text-red-400"}`}>
-                        edge {b.edge_bps >= 0 ? "+" : ""}{(b.edge_bps / 100).toFixed(1)}%
+                      <span className={`font-mono ${(b.edge_bps ?? 0) >= 0 ? "text-green-400" : "text-red-400"}`}>
+                        edge {(b.edge_bps ?? 0) >= 0 ? "+" : ""}{((b.edge_bps ?? 0) / 100).toFixed(1)}%
                       </span>
-                      <span className="text-gray-600">·</span>
-                      <span className="text-emerald-400 font-mono">EV ${b.expected_value_usd.toFixed(2)}</span>
+                      {b.expected_value_usd != null && (
+                        <><span className="text-gray-600">·</span>
+                        <span className="text-emerald-400 font-mono">EV ${b.expected_value_usd.toFixed(2)}</span></>
+                      )}
                     </div>
                     {b.status === "open" && (
                       <div className="text-[9px] text-gray-500 mt-1">
@@ -139,12 +141,12 @@ export default function PolymarketPanel() {
                     )}
                     {b.status === "won" && b.payout_usd && (
                       <div className="text-[10px] text-green-400 mt-1">
-                        +${(b.payout_usd - b.stake_usd).toFixed(2)} profit · BTC closed ${b.btc_at_resolve != null ? b.btc_at_resolve.toFixed(0) : "n/a"}
+                        +${(b.payout_usd - (b.stake_usd ?? 0)).toFixed(2)} profit · BTC closed ${b.btc_at_resolve != null ? b.btc_at_resolve.toFixed(0) : "n/a"}
                       </div>
                     )}
                     {b.status === "lost" && (
                       <div className="text-[10px] text-red-400 mt-1">
-                        -${b.stake_usd.toFixed(2)} · BTC closed ${b.btc_at_resolve != null ? b.btc_at_resolve.toFixed(0) : "n/a"}
+                        -${(b.stake_usd ?? 0).toFixed(2)} · BTC closed ${b.btc_at_resolve != null ? b.btc_at_resolve.toFixed(0) : "n/a"}
                       </div>
                     )}
                   </div>

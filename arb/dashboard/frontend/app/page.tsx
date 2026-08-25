@@ -40,6 +40,7 @@ const PolymarketPanel = safeDynamic(() => import("../src/components/PolymarketPa
 const CompoundingTracker = safeDynamic(() => import("../src/components/CompoundingTracker"));
 const EdgeRadar = safeDynamic(() => import("../src/components/EdgeRadar"));
 const OnChainIntel = safeDynamic(() => import("../src/components/OnChainIntel"));
+const SystemFlow = safeDynamic(() => import("../src/components/SystemFlow"));
 
 function Clock() {
   const [t, setT] = useState<string>("");
@@ -91,6 +92,9 @@ export default function Dashboard() {
       </div>
 
       <div className="p-4 space-y-3">
+        {/* Live system-flow visualisation — the backend engine, thinking */}
+        <SystemFlow />
+
         {/* Equity curve + live activity */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
           <div className="lg:col-span-7">
