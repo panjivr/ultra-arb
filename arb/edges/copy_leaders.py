@@ -156,9 +156,16 @@ async def run_copy_leaders():
                 await asyncio.sleep(POLL_SECONDS)
                 continue
 
+            # `live` must match mode.py's server_live_ready: REAL intent AND the
+            # server actually able to execute (PAPER_TRADE=false AND a live key).
+            # Without the key present, labelling a bet is_real_wallet/mode=real
+            # would show fictional real-money PnL for a bet that is never placed
+            # on-chain (copy_leaders only publishes signals; live execution is the
+            # operator's manual CLI step).
             mode = (await r.get("arb:mode")) or "demo"
             paper = os.getenv("PAPER_TRADE", "true").lower() != "false"
-            live = (mode == "real") and (not paper)
+            has_live_key = bool(os.getenv("POLYMARKET_PRIVATE_KEY", "").strip())
+            live = (mode == "real") and (not paper) and has_live_key
 
             async with httpx.AsyncClient(timeout=TIMEOUT) as client:
                 resp = await client.get(TRADES_URL, params={"limit": "150"})

@@ -6,11 +6,16 @@ Redis accessed via docker exec (consistent with VPS setup).
 """
 import json
 import os
+import shlex
 import subprocess
 import time
 from datetime import datetime, timezone
 
 REDIS_PW = os.environ.get("REDIS_PASSWORD", "reyog_redis_secret")
+REDIS_CONTAINER = os.environ.get("REDIS_CONTAINER", "reyog_redis")
+# Optional full redis-cli argv prefix override (tests / non-docker hosts), e.g.
+#   REDIS_CLI_CMD="redis-cli -p 6379"
+_REDIS_CLI_OVERRIDE = os.environ.get("REDIS_CLI_CMD", "").strip()
 
 DAILY_LIMIT_USD = 5.0    # max total spend per calendar day
 MAX_BET_USD = 2.0        # max single bet size
@@ -22,11 +27,24 @@ LIVE_HALT_KEY = "arb:live:halted"
 DAILY_SPEND_KEY_PREFIX = "arb:live:daily_spend:"
 
 
-def _rcli(args: str) -> str:
-    """Run redis-cli via docker exec."""
-    cmd = f"docker exec reyog_redis redis-cli -a {REDIS_PW} --no-auth-warning {args}"
+def _rcli(*args: str) -> str:
+    """Run a redis command with each argument passed SEPARATELY (no shell).
+
+    Money-safety critical: bet metadata (e.g. a Polymarket question containing an
+    apostrophe or a semicolon) is written verbatim as a single argv element, so it
+    can never break shell quoting — which previously silently dropped the LPUSH and
+    the daily-spend INCRBYFLOAT, letting the daily cap be bypassed — nor inject a
+    shell command. The auth token goes through REDISCLI_AUTH env, not the argv, so
+    it never appears in the process list.
+    """
+    if _REDIS_CLI_OVERRIDE:
+        argv = shlex.split(_REDIS_CLI_OVERRIDE) + list(args)
+    else:
+        argv = ["docker", "exec", "-e", "REDISCLI_AUTH", REDIS_CONTAINER,
+                "redis-cli", "--no-auth-warning", *args]
+    env = {**os.environ, "REDISCLI_AUTH": REDIS_PW}
     try:
-        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=5, env=env)
         return (r.stdout or "").strip()
     except Exception as e:
         return f"__ERR__ {e}"
@@ -40,14 +58,14 @@ def _today_key() -> str:
 
 
 def check_kill_switch() -> tuple[bool, str]:
-    val = _rcli(f"GET {LIVE_HALT_KEY}")
+    val = _rcli("GET", LIVE_HALT_KEY)
     if val and val not in ("", "(nil)", "__ERR__") and val != "0":
         return False, f"Kill-switch active: arb:live:halted='{val}'"
     return True, "Kill-switch clear"
 
 
 def check_daily_limit(proposed_usdc: float) -> tuple[bool, str]:
-    raw = _rcli(f"GET {_today_key()}")
+    raw = _rcli("GET", _today_key())
     try:
         spent = float(raw) if raw and raw not in ("(nil)", "", "__ERR__") else 0.0
     except ValueError:
@@ -189,13 +207,14 @@ def record_live_bet(order_id: str, size_usdc: float, meta: dict) -> None:
     }
     entry_json = json.dumps(entry)
 
-    # Increment daily spend
-    _rcli(f"INCRBYFLOAT {today_key} {size_usdc}")
-    _rcli(f"EXPIRE {today_key} 172800")  # 2 days TTL
+    # Increment daily spend (argv-separated → the cap can't be bypassed by a
+    # quoting failure the way the old shell-interpolated form could).
+    _rcli("INCRBYFLOAT", today_key, str(size_usdc))
+    _rcli("EXPIRE", today_key, "172800")  # 2 days TTL
 
-    # Append to live orders list
-    _rcli(f"LPUSH arb:live:orders '{entry_json}'")
-    _rcli("LTRIM arb:live:orders 0 999")
+    # Append to live orders list (entry_json passed as ONE argv element)
+    _rcli("LPUSH", "arb:live:orders", entry_json)
+    _rcli("LTRIM", "arb:live:orders", "0", "999")
 
     # Append to local audit file
     log_path = os.path.join(
