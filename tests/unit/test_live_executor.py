@@ -41,12 +41,13 @@ adapter = importlib.import_module("scripts.polymarket_live_adapter")
 @pytest.fixture
 def clean(monkeypatch):
     # wipe executor + safety state
-    for k in ("arb:live:executed", "arb:live:open_conditions", "arb:live:open_count",
-              "arb:live:total_spend", "arb:live:last_bet_ts", "arb:live:resolved_seen",
-              "arb:live:halted", "arb:live:consecutive_losses"):
+    today = datetime.now(timezone.utc).strftime("%Y%m%d")
+    for k in ("arb:live:executed", "arb:live:placed", "arb:live:open_conditions",
+              "arb:live:open_count", "arb:live:total_spend", "arb:live:last_bet_ts",
+              "arb:live:resolved_seen", "arb:live:halted", "arb:live:consecutive_losses",
+              "arb:polymarket:bets", "arb:live:orders",
+              f"arb:live:daily_spend:{today}", f"arb:live:daily_loss:{today}"):
         exe._rc.delete(k)
-    exe._rc.delete("arb:live:daily_spend:" + datetime.now(timezone.utc).strftime("%Y%m%d"))
-    exe._rc.delete("arb:live:orders")
 
     placed = []
 
@@ -133,3 +134,41 @@ def test_failing_friction_check_does_not_place(clean, monkeypatch):
     msg = exe._act_on_bet(_bet())
     assert "checks" in msg.lower()
     assert len(placed) == 0
+
+
+def test_copy_trade_bet_qualifies_by_conviction_and_side_class(clean):
+    placed = clean
+    # copy-trade bet: side "YES" (market tokens are Up/Down), conviction, NO edge_bps
+    bet = _bet(side="YES", conviction=0.7)
+    bet.pop("edge_bps", None)
+    msg = exe._act_on_bet(bet)
+    assert msg.startswith("✅ PLACED"), msg
+    assert placed[0]["token_id"] == "tok-up"  # YES resolved to the Up token
+    assert exe._rc.sismember("arb:live:placed", bet["id"])
+
+
+def test_low_conviction_and_low_edge_skipped(clean):
+    placed = clean
+    msg = exe._act_on_bet(_bet(edge_bps=100, conviction=0.3))
+    assert "below floor" in msg
+    assert len(placed) == 0
+
+
+def test_loss_monitor_only_counts_actually_placed_bets(clean):
+    import json
+    r = exe._rc
+    # A resolved BIG loss that was merely SKIPPED (in EXECUTED, never PLACED) —
+    # this is the demo/paper bet class that used to false-trip the auto-halt.
+    r.sadd("arb:live:executed", "skip-loss")
+    r.lpush("arb:polymarket:bets", json.dumps(
+        {"id": "skip-loss", "status": "lost", "stake_usd": 200.0, "condition_id": "0xz"}))
+    exe._loss_monitor()
+    assert not r.get("arb:live:halted"), "must NOT halt on a bet we never placed on-chain"
+
+    # A resolved loss we DID place is accounted (records the loss).
+    r.sadd("arb:live:placed", "real-loss")
+    r.lpush("arb:polymarket:bets", json.dumps(
+        {"id": "real-loss", "status": "lost", "stake_usd": 1.5, "condition_id": "0xr"}))
+    exe._loss_monitor()
+    today = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).strftime("%Y%m%d")
+    assert float(r.get(f"arb:live:daily_loss:{today}") or 0) >= 1.5

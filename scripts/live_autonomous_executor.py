@@ -54,7 +54,8 @@ os.environ.setdefault("LIVE_SAFETY_REDIS_URL", REDIS_URL)
 # ── Keys ──────────────────────────────────────────────────────────────────────
 BETS_KEY = "arb:polymarket:bets"
 ARMED_KEY = "arb:live:autonomous_armed"
-EXECUTED_KEY = "arb:live:executed"            # Set of bet ids we've acted on
+EXECUTED_KEY = "arb:live:executed"            # Set of bet ids we've ACTED ON (incl. skips) — dedup only
+PLACED_KEY = "arb:live:placed"                # Set of bet ids we ACTUALLY placed on-chain — feeds loss/PnL
 OPEN_CONDITIONS_KEY = "arb:live:open_conditions"  # Set of condition_ids with an open live position
 OPEN_COUNT_KEY = "arb:live:open_count"
 TOTAL_SPEND_KEY = "arb:live:total_spend"
@@ -73,6 +74,7 @@ TOTAL_CAP_USD = _capped("LIVE_TOTAL_CAP_USD", 25.0, 100.0)   # lifetime deployme
 MAX_OPEN_POSITIONS = int(_capped("LIVE_MAX_OPEN", 5, 20))
 MIN_SECONDS_BETWEEN_BETS = int(_capped("LIVE_MIN_GAP_SEC", 30, 3600))
 MIN_EDGE_BPS = _capped("LIVE_MIN_EDGE_BPS", 500.0, 5000.0)   # only act on ≥5% edge by default
+MIN_CONVICTION = _capped("LIVE_MIN_CONVICTION", 0.60, 1.0)   # copy-trade path qualifies by conviction
 MAX_SIGNAL_AGE_SEC = int(_capped("LIVE_MAX_SIGNAL_AGE_SEC", 120, 3600))
 MIN_ORDER_USD = 1.0
 POLL_SECONDS = int(_capped("LIVE_POLL_SEC", 8, 120))
@@ -125,6 +127,21 @@ def _parse_ttl(s: str) -> int:
 
 
 # ── Order sizing / market resolution ──────────────────────────────────────────
+_YES_LIKE = {"yes", "up", "over", "true", "long", "buy"}
+_NO_LIKE = {"no", "down", "under", "false", "short", "sell"}
+
+
+def _side_class(s: str) -> str:
+    """Normalise an outcome/side to yes|no so copy-trade YES/NO matches an
+    Up/Down market's tokens (the leader's original label was lost to YES/NO)."""
+    s = (s or "").strip().lower()
+    if s in _YES_LIKE:
+        return "yes"
+    if s in _NO_LIKE:
+        return "no"
+    return s
+
+
 def _pick_token(market: dict, side: str):
     """Return (token_id, best_ask, end_date_iso) for the bet's outcome, or None."""
     from scripts.polymarket_live_adapter import get_market_details
@@ -132,12 +149,12 @@ def _pick_token(market: dict, side: str):
     md = get_market_details(cond)
     if not isinstance(md, dict) or md.get("error"):
         return None
-    want = (side or "").strip().lower()
+    want = _side_class(side)
     obooks = md.get("order_books", {})
     end_iso = md.get("end_date_iso") or market.get("end_date") or ""
     for tok in md.get("tokens", []):
         outcome = str(tok.get("outcome", "")).strip().lower()
-        if outcome != want:
+        if _side_class(outcome) != want:
             continue
         ob = obooks.get(tok.get("outcome")) or obooks.get(outcome) or {}
         best_ask = ob.get("best_ask")
@@ -167,9 +184,13 @@ def _act_on_bet(bet: dict) -> str:
     if age_ms > MAX_SIGNAL_AGE_SEC * 1000:
         _rc.sadd(EXECUTED_KEY, bet_id)
         return "skip: stale signal"
-    if float(bet.get("edge_bps", 0) or 0) < MIN_EDGE_BPS:
+    # Qualify by edge (engine window-lag/whale bets) OR conviction (copy-trade
+    # bets carry `conviction`, not `edge_bps`). Either clears the quality bar.
+    edge_bps = float(bet.get("edge_bps", 0) or 0)
+    conviction = float(bet.get("conviction", 0) or 0)
+    if edge_bps < MIN_EDGE_BPS and conviction < MIN_CONVICTION:
         _rc.sadd(EXECUTED_KEY, bet_id)
-        return f"skip: edge {bet.get('edge_bps')}bps < {MIN_EDGE_BPS:.0f}"
+        return f"skip: edge {edge_bps:.0f}bps / conv {conviction:.2f} below floor"
 
     # One live position per market.
     if _rc.sismember(OPEN_CONDITIONS_KEY, cond):
@@ -244,6 +265,7 @@ def _act_on_bet(bet: dict) -> str:
         "token_id": token_id, "price": price, "shares": shares,
         "source": bet.get("source"), "edge_bps": bet.get("edge_bps"),
     })
+    _rc.sadd(PLACED_KEY, bet_id)  # ONLY real placements — the loss monitor keys off this
     _rc.incrbyfloat(TOTAL_SPEND_KEY, cost)
     _rc.incr(OPEN_COUNT_KEY)
     _rc.sadd(OPEN_CONDITIONS_KEY, cond)
@@ -268,14 +290,20 @@ def _loss_monitor():
         bet_id = b.get("bet_id") or b.get("id")
         if status not in ("won", "lost") or not bet_id:
             continue
-        # Only our executed bets, once each.
-        if not _rc.sismember(EXECUTED_KEY, bet_id):
+        # Only bets we ACTUALLY placed on-chain, once each. The EXECUTED set
+        # also holds skipped signals; counting those as real losses is what
+        # false-tripped the daily-loss auto-halt on demo/paper PnL.
+        if not _rc.sismember(PLACED_KEY, bet_id):
             continue
         if _rc.sismember(RESOLVED_SEEN_KEY, bet_id):
             continue
         _rc.sadd(RESOLVED_SEEN_KEY, bet_id)
-        # Free the position slot.
-        _rc.decr(OPEN_COUNT_KEY)
+        # Free the position slot (never below zero).
+        try:
+            if int(_rc.get(OPEN_COUNT_KEY) or 0) > 0:
+                _rc.decr(OPEN_COUNT_KEY)
+        except Exception:
+            pass
         cond = b.get("condition_id")
         if cond:
             _rc.srem(OPEN_CONDITIONS_KEY, cond)

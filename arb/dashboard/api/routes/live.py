@@ -35,7 +35,7 @@ async def live_state():
 
     halt_reason = await _get("arb:live:halted")
     total_spend = float(await _get("arb:live:total_spend", 0) or 0)
-    open_count = int(float(await _get("arb:live:open_count", 0) or 0))
+    open_count = max(0, int(float(await _get("arb:live:open_count", 0) or 0)))
     today = datetime.now(timezone.utc).strftime("%Y%m%d")
     daily_spend = float(await _get(f"arb:live:daily_spend:{today}", 0) or 0)
 
