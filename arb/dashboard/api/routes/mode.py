@@ -16,16 +16,26 @@ from arb.infra.redis_bus import get_redis
 router = APIRouter(prefix="/api/mode", tags=["mode"])
 
 
+async def _server_live_ready(r) -> bool:
+    """Live-capable if THIS container has the key, or the executor container
+    (which holds the key) has signalled arb:live:server_live_ready. Lets the
+    dashboard read REAL without the private key being copied into the backend."""
+    if (os.getenv("PAPER_TRADE", "true").lower() == "false"
+            and bool(os.getenv("POLYMARKET_PRIVATE_KEY", "").strip())):
+        return True
+    try:
+        return bool(await r.get("arb:live:server_live_ready"))
+    except Exception:
+        return False
+
+
 @router.get("")
 async def get_mode():
     r = get_redis()
     mode = (await r.get("arb:mode")) or "demo"
     wallet = await r.get("arb:mode:wallet")
     # Whether the server is actually capable of live execution.
-    server_live_ready = (
-        os.getenv("PAPER_TRADE", "true").lower() == "false"
-        and bool(os.getenv("POLYMARKET_PRIVATE_KEY", "").strip())
-    )
+    server_live_ready = await _server_live_ready(r)
     return {
         "mode": mode,
         "wallet": wallet,
@@ -49,10 +59,7 @@ async def set_mode(body: dict = Body(...)):
     else:
         await r.set("arb:mode", "demo")
 
-    server_live_ready = (
-        os.getenv("PAPER_TRADE", "true").lower() == "false"
-        and bool(os.getenv("POLYMARKET_PRIVATE_KEY", "").strip())
-    )
+    server_live_ready = await _server_live_ready(r)
     return {
         "ok": True,
         "mode": mode,

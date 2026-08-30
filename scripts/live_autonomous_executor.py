@@ -337,6 +337,10 @@ def run_loop():
             # Refresh the REAL Polymarket balance for the dashboard (~60s), even
             # in STANDBY, whenever the server is live-ready. This is what the
             # dashboard's REAL view reads — so it shows your actual account.
+            if _env_live_ready()[0]:
+                # Tell the backend (which has no key) that live execution is
+                # actually possible, so the dashboard badge reads REAL not paper.
+                _rc.set("arb:live:server_live_ready", "1", ex=180)
             if time.time() - last_bal > 60 and _env_live_ready()[0]:
                 try:
                     from scripts.polymarket_live_adapter import check_wallet_balance
