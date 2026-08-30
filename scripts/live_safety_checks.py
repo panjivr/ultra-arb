@@ -25,8 +25,12 @@ _py_client = None
 
 DAILY_LIMIT_USD = 5.0    # max total spend per calendar day
 MAX_BET_USD = 2.0        # max single bet size
-MIN_HOURS_TO_EXPIRY = 1  # market must have at least 1h left
-MAX_HOURS_TO_EXPIRY = 168  # market must close within 7 days
+# Min time left in the market. Default 1h (conservative, for the manual CLI).
+# The autonomous executor targets short BTC Up/Down windows (5m–1h), so its
+# container sets MIN_HOURS_TO_EXPIRY low (e.g. 0.05 = 3 min) — long enough to
+# fill an order, short enough to bet the near-decided window-lag edge.
+MIN_HOURS_TO_EXPIRY = float(os.environ.get("MIN_HOURS_TO_EXPIRY", "1"))
+MAX_HOURS_TO_EXPIRY = float(os.environ.get("MAX_HOURS_TO_EXPIRY", "168"))  # within 7 days
 MAX_FRICTION_PCT = 10.0  # reject if friction >= 10%
 
 LIVE_HALT_KEY = "arb:live:halted"

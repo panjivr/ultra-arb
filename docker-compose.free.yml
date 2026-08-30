@@ -165,6 +165,9 @@ services:
       LIVE_MAX_OPEN: ${LIVE_MAX_OPEN:-5}
       LIVE_MIN_GAP_SEC: ${LIVE_MIN_GAP_SEC:-30}
       LIVE_MIN_EDGE_BPS: ${LIVE_MIN_EDGE_BPS:-500}
+      LIVE_MIN_CONVICTION: ${LIVE_MIN_CONVICTION:-0.60}
+      # Short BTC Up/Down windows: allow markets closing in >= 3 min (0.05h).
+      MIN_HOURS_TO_EXPIRY: ${LIVE_MIN_HOURS_EXPIRY:-0.05}
     networks: [reyog]
 
   frontend:
