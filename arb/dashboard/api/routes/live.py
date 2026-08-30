@@ -39,6 +39,26 @@ async def live_state():
     today = datetime.now(timezone.utc).strftime("%Y%m%d")
     daily_spend = float(await _get(f"arb:live:daily_spend:{today}", 0) or 0)
 
+    # REAL account figures (written by the executor) — the dashboard's REAL view.
+    wallet_balance = await _get("arb:live:wallet_balance")
+    wallet_balance = float(wallet_balance) if wallet_balance not in (None, "") else None
+    realized_pnl = float(await _get("arb:live:realized_pnl", 0) or 0)
+    try:
+        orders_count = int(await r.scard("arb:live:placed"))
+    except Exception:
+        orders_count = 0
+    # Most recent real orders placed on-chain (from the audit list).
+    recent_orders = []
+    import json
+    try:
+        for raw in (await r.lrange("arb:live:orders", 0, 14)) or []:
+            try:
+                recent_orders.append(json.loads(raw))
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     return {
         "mode": mode,
         "armed": bool(armed),
@@ -48,6 +68,11 @@ async def live_state():
         "total_spend": round(total_spend, 2),
         "daily_spend": round(daily_spend, 2),
         "open_count": open_count,
+        # real account
+        "wallet_balance": wallet_balance,
+        "realized_pnl": round(realized_pnl, 4),
+        "orders_count": orders_count,
+        "recent_orders": recent_orders,
         "caps": CAPS,
         "gates": {
             "mode_real": mode == "real",

@@ -15,7 +15,7 @@ type Tone = "tick" | "signal" | "edge" | "gate" | "order" | "resolve-win" | "res
 interface FeedItem { id: string; text: string; tone: Tone; ts: number }
 interface LiveState {
   mode: string; armed: boolean; halted: boolean; halt_reason?: string | null;
-  total_spend: number; daily_spend: number; open_count: number;
+  total_spend: number; daily_spend: number; open_count: number; orders_count?: number;
   caps: { bet: number; daily: number; total: number; min_edge_bps: number; max_open: number };
   gates: { mode_real: boolean; armed: boolean; not_halted: boolean };
 }
@@ -173,6 +173,9 @@ export default function SystemFlow() {
   const stageValue = (key: string): string => {
     if (key === "gates") return halted ? "BLOKIR" : `${gatesOpen}/3`;
     if (key === "edges") return String(counts.edges ?? 0);
+    // In REAL mode the Order stage shows ACTUAL on-chain placements, not the
+    // paper signal count that flows through arb:polymarket:bets.
+    if (key === "order" && isLive) return String(live?.orders_count ?? 0);
     return String(counts[key] ?? 0);
   };
   const recentlyPulsed = (key: string) => pulse[key] && Date.now() - pulse[key] < 650;

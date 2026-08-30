@@ -1,5 +1,6 @@
 "use client";
 import { api } from "../lib/api";
+import { useLiveReal } from "../lib/useLiveReal";
 import { useEffect, useState, ReactNode } from "react";
 import AnimatedNumber from "./AnimatedNumber";
 
@@ -34,6 +35,7 @@ function KPI({ label, value, unit = "", trend = "neutral", subtitle = "" }:
 
 export default function StatsBar() {
   const [s, setS] = useState<Stats | null>(null);
+  const { live, realMode } = useLiveReal(3000);
 
   useEffect(() => {
     const load = async () => {
@@ -46,6 +48,42 @@ export default function StatsBar() {
     const id = setInterval(load, 2000);
     return () => clearInterval(id);
   }, []);
+
+  // ── REAL mode: only the actual Polymarket account — no paper figures ──
+  if (realMode) {
+    const bal = live?.wallet_balance;
+    const pnl = live?.realized_pnl ?? 0;
+    const caps = live?.caps;
+    return (
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-2">
+        <div className="bg-gray-900 border border-emerald-800/50 rounded-lg px-3 py-2 min-w-[120px] relative">
+          <span className="absolute top-1 right-1 text-[8px] bg-emerald-700 text-white px-1 rounded font-bold">REAL</span>
+          <div className="text-[10px] text-gray-500 uppercase tracking-wider">Real Balance</div>
+          <div className="font-mono text-lg font-bold text-white">
+            {bal == null ? <span className="text-gray-500 text-sm">—</span> :
+              <>$<AnimatedNumber value={bal} format={(n) => n.toFixed(2)} /></>}
+          </div>
+          <div className="text-[10px] text-emerald-300">Polymarket</div>
+        </div>
+        <KPI label="Realized PnL" unit="USD" trend={pnl >= 0 ? "good" : "bad"}
+          value={<AnimatedNumber value={pnl} format={(n) => sign(n) + n.toFixed(2)} />}
+          subtitle="order resolved" />
+        <KPI label="Orders" value={live?.orders_count ?? 0} subtitle="real ditaruh" />
+        <KPI label="Open" value={live?.open_count ?? 0} subtitle={`/ ${caps?.max_open ?? 5} maks`} />
+        <KPI label="Spent Today" unit="USD"
+          value={<AnimatedNumber value={live?.daily_spend ?? 0} format={(n) => n.toFixed(2)} />}
+          subtitle={`/ $${caps?.daily ?? 5} cap`} />
+        <KPI label="Total Spent" unit="USD"
+          value={<AnimatedNumber value={live?.total_spend ?? 0} format={(n) => n.toFixed(2)} />}
+          subtitle={`/ $${caps?.total ?? 25} cap`} />
+        <KPI label="Per-bet Cap" unit="USD" value={(caps?.bet ?? 2).toFixed(2)} subtitle="maks / taruhan" />
+        <KPI label="Status"
+          trend={live?.halted ? "bad" : live?.armed ? "good" : "neutral"}
+          value={live?.halted ? "HALTED" : live?.armed ? "ARMED" : "STANDBY"}
+          subtitle={live?.armed ? "eksekusi aktif" : "menunggu arm"} />
+      </div>
+    );
+  }
 
   if (!s) return <div className="text-gray-500 text-sm">Loading stats...</div>;
 

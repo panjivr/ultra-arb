@@ -61,6 +61,8 @@ OPEN_COUNT_KEY = "arb:live:open_count"
 TOTAL_SPEND_KEY = "arb:live:total_spend"
 LAST_BET_TS_KEY = "arb:live:last_bet_ts"
 RESOLVED_SEEN_KEY = "arb:live:resolved_seen"  # executed bet ids already fed to kill-switch
+REALIZED_PNL_KEY = "arb:live:realized_pnl"    # cumulative REAL realized PnL (placed bets only)
+BALANCE_KEY = "arb:live:wallet_balance"       # last real Polymarket USDC balance (for the dashboard)
 
 # ── Caps (env can LOWER; a hard ceiling stops any config raising them) ─────────
 def _capped(env_name: str, default: float, hard_ceiling: float) -> float:
@@ -309,10 +311,14 @@ def _loss_monitor():
             _rc.srem(OPEN_CONDITIONS_KEY, cond)
         if status == "lost":
             loss = abs(float(b.get("stake_usd", 0) or 0))
+            _rc.incrbyfloat(REALIZED_PNL_KEY, -loss)   # real realized PnL
             out = record_loss(loss)
             if out.get("halted"):
                 print(f"[live-exec] 🔴 {out['reason']}")
         else:
+            stake = float(b.get("stake_usd", 0) or 0)
+            payout = float(b.get("payout_usd", 0) or 0)
+            _rc.incrbyfloat(REALIZED_PNL_KEY, max(0.0, payout - stake))
             record_win()
 
 
@@ -325,8 +331,21 @@ def run_loop():
     print("  DEFAULT-SAFE: places nothing until all gates are open.")
     print("=" * 70)
     standby_note = None
+    last_bal = 0.0
     while True:
         try:
+            # Refresh the REAL Polymarket balance for the dashboard (~60s), even
+            # in STANDBY, whenever the server is live-ready. This is what the
+            # dashboard's REAL view reads — so it shows your actual account.
+            if time.time() - last_bal > 60 and _env_live_ready()[0]:
+                try:
+                    from scripts.polymarket_live_adapter import check_wallet_balance
+                    bal = check_wallet_balance()
+                    _rc.set(BALANCE_KEY, str(round(float(bal.get("balance_usdc", 0) or 0), 4)))
+                except Exception:
+                    pass
+                last_bal = time.time()
+
             ok, why = _gates()
             if not ok:
                 if why != standby_note:
